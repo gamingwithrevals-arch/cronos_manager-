@@ -1,5 +1,6 @@
 package com.cronoszip.app.ui
 
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,25 +32,28 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.cronoszip.app.data.BrowserMode
 import com.cronoszip.app.data.CheckData
 import com.cronoszip.app.data.UiEffect
 import com.cronoszip.app.ui.background.LiquidBackground
 import com.cronoszip.app.ui.components.CheckingOverlay
-import com.cronoszip.app.ui.components.GlassCard
 import com.cronoszip.app.ui.components.PlanBar
 import com.cronoszip.app.ui.components.PrimaryButton
 import com.cronoszip.app.ui.components.SecondaryButton
+import com.cronoszip.app.ui.components.SolidDialogCard
 import com.cronoszip.app.ui.screens.ArchiveDetailsScreen
+import com.cronoszip.app.ui.screens.ArchiveViewerScreen
 import com.cronoszip.app.ui.screens.ExtractSetupScreen
 import com.cronoszip.app.ui.screens.ExtractingScreen
 import com.cronoszip.app.ui.screens.FileBrowserScreen
+import com.cronoszip.app.ui.screens.FileManagerScreen
 import com.cronoszip.app.ui.screens.HomeScreen
 import com.cronoszip.app.ui.screens.SettingsScreen
-import com.cronoszip.app.ui.screens.FileManagerScreen
 import com.cronoszip.app.ui.screens.UpdaterScreen
 import com.cronoszip.app.ui.theme.CronosBlue
 import com.cronoszip.app.ui.theme.CronosCyan
@@ -68,7 +72,9 @@ private object Routes {
     const val Settings = "settings"
     const val Files = "files"
     const val Update = "update"
+    const val ArchivePattern = "archive/{path}"
     fun browser(mode: BrowserMode) = "browser/${mode.name}"
+    fun archiveView(path: String) = "archive/${Uri.encode(path)}"
 }
 
 @Composable
@@ -105,8 +111,8 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                 is UiEffect.RestoreCompleted -> {
                     viewModel.resetExtraction()
                     scope.launch { snackbar.showSnackbar(effect.message) }
-                    nav.navigate(Routes.Home) {
-                        popUpTo(Routes.Home) { inclusive = false }
+                    nav.navigate(Routes.Files) {
+                        popUpTo(Routes.Files) { inclusive = false }
                         launchSingleTop = true
                     }
                 }
@@ -119,9 +125,31 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
 
         NavHost(
             navController = nav,
-            startDestination = Routes.Home,
+            startDestination = Routes.Files,
             modifier = Modifier.fillMaxSize(),
         ) {
+            composable(Routes.Files) {
+                FileManagerScreen(
+                    viewModel = viewModel,
+                    onBack = null,
+                    onOpenArchive = { nav.navigate(Routes.archiveView(it)) },
+                    onExtract = { nav.navigate(Routes.browser(BrowserMode.Archive)) },
+                    onSettings = { nav.navigate(Routes.Settings) },
+                )
+            }
+
+            composable(
+                route = Routes.ArchivePattern,
+                arguments = listOf(navArgument("path") { type = NavType.StringType }),
+            ) { entry ->
+                val archivePath = entry.arguments?.getString("path").orEmpty()
+                ArchiveViewerScreen(
+                    path = archivePath,
+                    onBack = { nav.popBackStack() },
+                    onExtract = { viewModel.checkArchive(archivePath) },
+                )
+            }
+
             composable(Routes.Home) {
                 HomeScreen(
                     viewModel = viewModel,
@@ -169,8 +197,8 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                 ExtractingScreen(
                     viewModel = viewModel,
                     onDone = {
-                        nav.navigate(Routes.Home) {
-                            popUpTo(Routes.Home) { inclusive = false }
+                        nav.navigate(Routes.Files) {
+                            popUpTo(Routes.Files) { inclusive = false }
                             launchSingleTop = true
                         }
                     },
@@ -191,14 +219,6 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                     onBack = { nav.popBackStack() },
                     onOpenFiles = { nav.navigate(Routes.Files) },
                     onOpenUpdate = { nav.navigate(Routes.Update) },
-                )
-            }
-
-            composable(Routes.Files) {
-                FileManagerScreen(
-                    viewModel = viewModel,
-                    onBack = { nav.popBackStack() },
-                    onOpenArchive = { viewModel.checkArchive(it) },
                 )
             }
 
@@ -230,7 +250,7 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                 viewModel.cancelPassword()
             },
         ) {
-            GlassCard(glow = CronosBlue) {
+            SolidDialogCard(glow = CronosBlue) {
                 Text(
                     text = "Archive password",
                     style = MaterialTheme.typography.headlineSmall,
@@ -284,7 +304,7 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
 
     noSpaceCheck?.let { check ->
         Dialog(onDismissRequest = { noSpaceCheck = null }) {
-            GlassCard(glow = Danger) {
+            SolidDialogCard(glow = Danger) {
                 Text(
                     text = "Not enough room",
                     style = MaterialTheme.typography.headlineSmall,
@@ -293,7 +313,7 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = "The engine proved the plan before changing anything. " +
-                        "CronosZip will not start this extraction yet.",
+                        "Chronos Manager will not start this extraction yet.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary,
                 )
