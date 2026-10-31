@@ -171,6 +171,10 @@ fun Wordmark(
     }
 }
 
+/**
+ * The card used everywhere, including inside dialogs and overlays. It is solid dark blue now,
+ * so the screen behind it no longer shows through. The blue border glow is kept.
+ */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
@@ -185,9 +189,9 @@ fun GlassCard(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        GlassWhite.copy(alpha = 0.115f),
-                        GlassWhite.copy(alpha = 0.045f),
-                        GlassWhite.copy(alpha = 0.025f),
+                        Color(0xFF0E2340),
+                        Color(0xFF0A1A30),
+                        Color(0xFF071324),
                     ),
                 ),
             )
