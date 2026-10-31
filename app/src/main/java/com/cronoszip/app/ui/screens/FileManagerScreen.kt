@@ -49,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +66,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.cronoszip.app.data.DocumentsProviderApps
 import com.cronoszip.app.data.FileClipboard
 import com.cronoszip.app.data.FileItem
+import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.FileOperations
 import com.cronoszip.app.data.PinnedLocation
 import com.cronoszip.app.data.PinnedStorage
@@ -88,6 +90,9 @@ import com.cronoszip.app.util.isArchive
 import com.cronoszip.app.util.requestAllFilesAccess
 import com.cronoszip.app.viewmodel.CronosViewModel
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun FileManagerScreen(
@@ -180,6 +185,7 @@ private fun SinglePane(
     onOpenArchive: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var current by remember { mutableStateOf(roots.firstOrNull()?.second ?: "") }
     var entries by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
@@ -196,8 +202,9 @@ private fun SinglePane(
         current = path
         loading = true
         error = null
-        if (SafStorage.isSaf(path)) {
-            val items = SafStorage.list(context, Uri.parse(path))
+        scope.launch {
+            val items = FileListing.list(context, path)
+            if (current != path) return@launch
             loading = false
             if (items == null) {
                 error = "Cannot read this folder."
@@ -205,30 +212,7 @@ private fun SinglePane(
             } else {
                 entries = items
             }
-            return
         }
-        val dir = File(path)
-        val children = try { dir.listFiles() } catch (e: SecurityException) { null }
-        if (children == null) {
-            loading = false
-            error = "Cannot read this folder."
-            entries = emptyList()
-            return
-        }
-        entries = children
-            .filterNot { it.name.startsWith(".") }
-            .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
-            .map {
-                FileItem(
-                    name = it.name,
-                    path = it.absolutePath,
-                    directory = it.isDirectory,
-                    size = if (it.isDirectory) 0L else it.length(),
-                    modified = it.lastModified(),
-                    archive = it.isFile && isArchive(it.name),
-                )
-            }
-        loading = false
     }
 
     fun open(item: FileItem) {
@@ -263,6 +247,27 @@ private fun SinglePane(
         }
     }
 
+    fun pasteHere() {
+        val source = FileClipboard.path ?: return
+        val cut = FileClipboard.cut
+        val here = current
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                MixedFileOps.paste(context, here, source, cut)
+            }
+            result
+                .onSuccess { name ->
+                    status = "Pasted $name"
+                    if (cut) {
+                        FileClipboard.path = null
+                        FileClipboard.cut = false
+                    }
+                }
+                .onFailure { status = it.message }
+            load(here)
+        }
+    }
+
     LaunchedEffect(roots) {
         if (current.isBlank() || roots.none { it.second == current }) {
             current = roots.firstOrNull()?.second ?: ""
@@ -287,20 +292,7 @@ private fun SinglePane(
                 selected = FileClipboard.path != null,
                 onClick = if (FileClipboard.path != null) {
                     {
-                        val source = FileClipboard.path
-                        val cut = FileClipboard.cut
-                        if (source != null) {
-                            MixedFileOps.paste(context, current, source, cut)
-                                .onSuccess { name ->
-                                    status = "Pasted $name"
-                                    if (cut) {
-                                        FileClipboard.path = null
-                                        FileClipboard.cut = false
-                                    }
-                                }
-                                .onFailure { status = it.message }
-                        }
-                        load(current)
+                        pasteHere()
                     }
                 } else {
                     null
@@ -479,17 +471,22 @@ private fun SinglePane(
                         enabled = inputName.isNotBlank(),
                         onClick = {
                             val name = inputName.trim()
-                            if (SafStorage.isSaf(current)) {
-                                SafStorage.createFolder(context, Uri.parse(current), name)
-                                    .onSuccess { status = "Created ${SafStorage.documentName(context, it) ?: name}" }
-                                    .onFailure { status = it.message }
-                            } else {
-                                FileOperations.createFolder(File(current), name)
-                                    .onSuccess { status = "Created ${it.name}" }
-                                    .onFailure { status = it.message }
-                            }
+                            val here = current
                             showNewFolder = false
-                            load(current)
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    if (SafStorage.isSaf(here)) {
+                                        SafStorage.createFolder(context, Uri.parse(here), name)
+                                            .map { SafStorage.documentName(context, it) ?: name }
+                                    } else {
+                                        FileOperations.createFolder(File(here), name).map { it.name }
+                                    }
+                                }
+                                result
+                                    .onSuccess { status = "Created $it" }
+                                    .onFailure { status = it.message }
+                                load(here)
+                            }
                         },
                     )
                 }
@@ -522,17 +519,23 @@ private fun SinglePane(
                         enabled = inputName.isNotBlank(),
                         onClick = {
                             val name = inputName.trim()
-                            if (SafStorage.isSaf(item.path)) {
-                                SafStorage.rename(context, Uri.parse(item.path), name)
-                                    .onSuccess { status = "Renamed to ${SafStorage.documentName(context, it) ?: name}" }
-                                    .onFailure { status = it.message }
-                            } else {
-                                FileOperations.rename(File(item.path), name)
-                                    .onSuccess { status = "Renamed to ${it.name}" }
-                                    .onFailure { status = it.message }
-                            }
+                            val target = item
+                            val here = current
                             renameItem = null
-                            load(current)
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    if (SafStorage.isSaf(target.path)) {
+                                        SafStorage.rename(context, Uri.parse(target.path), name)
+                                            .map { SafStorage.documentName(context, it) ?: name }
+                                    } else {
+                                        FileOperations.rename(File(target.path), name).map { it.name }
+                                    }
+                                }
+                                result
+                                    .onSuccess { status = "Renamed to $it" }
+                                    .onFailure { status = it.message }
+                                load(here)
+                            }
                         },
                     )
                 }
@@ -565,17 +568,22 @@ private fun SinglePane(
                         text = "Delete",
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            if (SafStorage.isSaf(item.path)) {
-                                SafStorage.delete(context, Uri.parse(item.path))
-                                    .onSuccess { status = "Deleted ${item.name}" }
-                                    .onFailure { status = it.message }
-                            } else {
-                                FileOperations.delete(File(item.path))
-                                    .onSuccess { status = "Deleted ${item.name}" }
-                                    .onFailure { status = it.message }
-                            }
+                            val target = item
+                            val here = current
                             deleteItem = null
-                            load(current)
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    if (SafStorage.isSaf(target.path)) {
+                                        SafStorage.delete(context, Uri.parse(target.path))
+                                    } else {
+                                        FileOperations.delete(File(target.path))
+                                    }
+                                }
+                                result
+                                    .onSuccess { status = "Deleted ${target.name}" }
+                                    .onFailure { status = it.message }
+                                load(here)
+                            }
                         },
                     )
                 }
@@ -623,6 +631,7 @@ private fun Pane(
     onOpenArchive: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var current by remember(start) { mutableStateOf(start) }
     var entries by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
@@ -634,8 +643,9 @@ private fun Pane(
         current = path
         loading = true
         error = null
-        if (SafStorage.isSaf(path)) {
-            val items = SafStorage.list(context, Uri.parse(path))
+        scope.launch {
+            val items = FileListing.list(context, path)
+            if (current != path) return@launch
             loading = false
             if (items == null) {
                 error = "Cannot read"
@@ -643,20 +653,7 @@ private fun Pane(
             } else {
                 entries = items
             }
-            return
         }
-        val dir = File(path)
-        val children = try { dir.listFiles() } catch (e: SecurityException) { null }
-        if (children == null) {
-            loading = false
-            error = "Cannot read"
-            entries = emptyList()
-            return
-        }
-        entries = children.filterNot { it.name.startsWith(".") }.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() })).map {
-            FileItem(name = it.name, path = it.absolutePath, directory = it.isDirectory, size = if (it.isDirectory) 0L else it.length(), modified = it.lastModified(), archive = it.isFile && isArchive(it.name))
-        }
-        loading = false
     }
 
     fun open(item: FileItem) {
@@ -686,6 +683,26 @@ private fun Pane(
         }
     }
 
+    fun pasteHere() {
+        val source = FileClipboard.path ?: return
+        val cut = FileClipboard.cut
+        val here = current
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                MixedFileOps.paste(context, here, source, cut)
+            }
+            result.onSuccess {
+                if (cut) {
+                    FileClipboard.path = null
+                    FileClipboard.cut = false
+                }
+                onChanged()
+            }
+            load(here)
+            result.onFailure { error = it.message }
+        }
+    }
+
     LaunchedEffect(current, refreshToken) { if (current.isNotBlank()) load(current) }
 
     GlassCard(modifier = modifier.fillMaxHeight(), contentPadding = PaddingValues(10.dp)) {
@@ -698,20 +715,7 @@ private fun Pane(
                         selected = FileClipboard.path != null,
                         onClick = if (FileClipboard.path != null) {
                             {
-                                val source = FileClipboard.path
-                                val cut = FileClipboard.cut
-                                if (source != null) {
-                                    MixedFileOps.paste(context, current, source, cut)
-                                        .onSuccess {
-                                            if (cut) {
-                                                FileClipboard.path = null
-                                                FileClipboard.cut = false
-                                            }
-                                            onChanged()
-                                        }
-                                        .onFailure { error = it.message }
-                                }
-                                load(current)
+                                pasteHere()
                             }
                         } else {
                             null
