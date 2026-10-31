@@ -28,6 +28,7 @@ import com.cronoszip.app.data.ExtractConfig
 import com.cronoszip.app.data.ExtractSummary
 import com.cronoszip.app.data.ExtractionState
 import com.cronoszip.app.data.FileItem
+import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.HistoryEntry
 import com.cronoszip.app.data.HistoryStore
 import com.cronoszip.app.data.NativeEvent
@@ -45,7 +46,6 @@ import com.cronoszip.app.data.UpdateInfo
 import com.cronoszip.app.data.UpdateRepository
 import com.cronoszip.app.data.UpdateState
 import com.cronoszip.app.util.hasStorageAccess
-import com.cronoszip.app.util.isArchive
 import java.io.File
 import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
@@ -579,34 +579,18 @@ class CronosViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /**
+     * The browser shows folders only in Folder mode, and folders plus archives otherwise.
+     * Listing itself is shared with the Files screen through [FileListing].
+     */
     private fun listFiles(path: String, mode: BrowserMode): List<FileItem>? {
-        val directory = File(path)
-        val children = try {
-            directory.listFiles()
-        } catch (error: SecurityException) {
-            null
-        } ?: return null
-        return children.asSequence()
-            .filterNot { it.name.startsWith(".") }
-            .filter { child ->
-                if (mode == BrowserMode.Folder) {
-                    child.isDirectory
-                } else {
-                    child.isDirectory || (child.isFile && isArchive(child.name))
-                }
+        return FileListing.listLocal(path)?.filter { child ->
+            if (mode == BrowserMode.Folder) {
+                child.directory
+            } else {
+                child.directory || child.archive
             }
-            .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
-            .map { child ->
-                FileItem(
-                    name = child.name,
-                    path = child.absolutePath,
-                    directory = child.isDirectory,
-                    size = if (child.isDirectory) 0L else child.length(),
-                    modified = child.lastModified(),
-                    archive = child.isFile && isArchive(child.name),
-                )
-            }
-            .toList()
+        }
     }
 
     private fun storageRoots(): List<StorageRoot> {
