@@ -14,8 +14,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class UpdateRepository(private val context: Context) {
-    private val repoOwner = "jacojayy"
-    private val repoName = "cronoszip"
+    private val repoOwner = "aizenemu"
+    private val repoName = "cronosmanager"
 
     suspend fun fetchLatest(): UpdateInfo? = withContext(Dispatchers.IO) {
         val url = URL("https://api.github.com/repos/$repoOwner/$repoName/releases/latest")
