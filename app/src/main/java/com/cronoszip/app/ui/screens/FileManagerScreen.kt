@@ -73,6 +73,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -128,6 +129,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Remembers which finished extraction the Files screen already jumped to, so it jumps once per result. */
+private object ExtractionHint {
+    var applied: String? = null
+}
+
 /** Items picked in select mode, shared by both panes. */
 private class SelectionState {
     var selecting by mutableStateOf(false)
@@ -155,6 +161,10 @@ private fun isLocalArchive(path: String): Boolean =
 
 private fun batchDone(b: BatchState): Int =
     b.items.count { it.status != BatchStatus.Waiting && it.status != BatchStatus.Working }
+
+/** True when [path] is one of the storage roots or inside one of them. */
+private fun underAnyRoot(path: String, roots: List<Pair<String, String>>): Boolean =
+    roots.any { path == it.second || path.startsWith(it.second + "/") }
 
 /** The message shown when a folder can't be listed. Explains Android's restriction on app data folders. */
 private fun unreadableMessage(path: String): String =
@@ -185,6 +195,7 @@ fun FileManagerScreen(
     var granted by remember { mutableStateOf(hasStorageAccess(context)) }
     val pinned = viewModel.pinned
     val roots = remember(context, pinned) { managerRoots(context, pinned) }
+    val extraction by viewModel.extraction.collectAsState()
     var split by remember { mutableStateOf(false) }
     var activePane by remember { mutableStateOf(0) }
     var pathA by remember { mutableStateOf("") }
@@ -211,11 +222,23 @@ fun FileManagerScreen(
     }
 
     LaunchedEffect(roots) {
-        if (pathA.isBlank() || roots.none { it.second == pathA }) {
+        if (pathA.isBlank() || !underAnyRoot(pathA, roots)) {
             pathA = roots.firstOrNull()?.second.orEmpty()
         }
-        if (pathB.isBlank() || roots.none { it.second == pathB }) {
+        if (pathB.isBlank() || !underAnyRoot(pathB, roots)) {
             pathB = roots.getOrNull(1)?.second ?: roots.firstOrNull()?.second.orEmpty()
+        }
+    }
+
+    // After an extraction finishes, open the folder the files were extracted into.
+    LaunchedEffect(extraction.success, extraction.output) {
+        val out = extraction.output
+        if (extraction.success && out.isNotBlank() && out != ExtractionHint.applied) {
+            ExtractionHint.applied = out
+            pathA = out
+            activePane = 0
+            sel.selected.clear()
+            message = "Showing the extracted files."
         }
     }
 
@@ -271,7 +294,12 @@ fun FileManagerScreen(
         ModeSwitch(split = split, onChange = { split = it; activePane = 0 })
         Spacer(Modifier.height(12.dp))
 
-        LocationStrip(roots = roots, activePath = activePath, onPick = { setActivePath(it) })
+        LocationStrip(
+            roots = roots,
+            activePath = activePath,
+            onPick = { setActivePath(it) },
+            onAdd = { showStorage = true },
+        )
         Spacer(Modifier.height(12.dp))
 
         if (granted) {
@@ -427,14 +455,6 @@ fun FileManagerScreen(
             onSort = { sortMode = it },
             descending = descending,
             onDescending = { descending = it },
-            onExtract = {
-                showOptions = false
-                onExtract()
-            },
-            onStorage = {
-                showOptions = false
-                showStorage = true
-            },
             onSettings = {
                 showOptions = false
                 onSettings()
@@ -630,6 +650,7 @@ private fun LocationStrip(
     roots: List<Pair<String, String>>,
     activePath: String,
     onPick: (String) -> Unit,
+    onAdd: () -> Unit,
 ) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(roots) { root ->
@@ -638,6 +659,9 @@ private fun LocationStrip(
                 selected = activePath == root.second,
                 onClick = { onPick(root.second) },
             )
+        }
+        item {
+            GlassChip(text = "+ Add", onClick = onAdd)
         }
     }
 }
@@ -785,11 +809,10 @@ private fun OptionsDialog(
     onSort: (SortMode) -> Unit,
     descending: Boolean,
     onDescending: (Boolean) -> Unit,
-    onExtract: () -> Unit,
-    onStorage: () -> Unit,
     onSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val uriHandler = LocalUriHandler.current
     Dialog(onDismissRequest = onDismiss) {
         SolidDialogCard(glow = CronosCyan) {
             Text("Options", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
@@ -806,9 +829,25 @@ private fun OptionsDialog(
             SwitchRow(label = "Descending", checked = descending, onChange = onDescending)
 
             Spacer(Modifier.height(14.dp))
-            SectionTitle("Tools")
-            LinkRow(label = "Extract archive", onClick = onExtract)
-            LinkRow(label = "Storage locations", onClick = onStorage)
+            SectionTitle("About")
+            Text(
+                text = "Chronos Manager brings HatchZip functionality to Android. It is a fork of Chronos Zip, " +
+                    "which is a fork of HatchZip, expanded into a full-fledged file manager.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "By AizenEMU",
+                style = MaterialTheme.typography.labelMedium,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(10.dp))
+            SecondaryButton(
+                text = "Support on YouTube",
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { uriHandler.openUri("https://youtube.com/@aizenemu") },
+            )
             LinkRow(label = "Settings", onClick = onSettings)
 
             Spacer(Modifier.height(16.dp))
@@ -1347,7 +1386,7 @@ private fun UpRow(compact: Boolean, onClick: () -> Unit) {
             tint = TextSecondary,
             modifier = Modifier.size(if (compact) 16.dp else 18.dp),
         )
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(10.dp))
         Text(
             text = "Up one folder",
             style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
@@ -1366,8 +1405,8 @@ private fun EntryRow(
     onTap: () -> Unit,
     onMore: () -> Unit,
 ) {
-    val iconBox = if (compact) 32.dp else 40.dp
-    val iconSize = if (compact) 17.dp else 20.dp
+    val iconBox = if (compact) 28.dp else 40.dp
+    val iconSize = if (compact) 16.dp else 20.dp
     val tint = if (item.directory) CronosCyan else Color(0xFF9CC7FF)
     val background = if (item.directory) CronosCyan.copy(alpha = 0.14f) else CronosBlue.copy(alpha = 0.16f)
     val icon: ImageVector = when {
@@ -1386,7 +1425,7 @@ private fun EntryRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onTap)
-                .padding(horizontal = 4.dp, vertical = if (compact) 8.dp else 10.dp),
+                .padding(horizontal = if (compact) 2.dp else 4.dp, vertical = if (compact) 8.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (selecting) {
@@ -1394,26 +1433,26 @@ private fun EntryRow(
                     imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
                     contentDescription = null,
                     tint = if (checked) CronosCyan else TextSecondary,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(if (compact) 16.dp else 20.dp),
                 )
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(6.dp))
             }
             Box(
                 modifier = Modifier
                     .size(iconBox)
-                    .clip(RoundedCornerShape(11.dp))
+                    .clip(RoundedCornerShape(10.dp))
                     .background(background),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(iconSize))
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(if (compact) 8.dp else 12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = item.name,
                     style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
                     color = TextPrimary,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
@@ -1425,7 +1464,7 @@ private fun EntryRow(
                 )
             }
             if (!selecting) {
-                if (item.directory) {
+                if (!compact && item.directory) {
                     Icon(
                         imageVector = Icons.Rounded.ChevronRight,
                         contentDescription = null,
@@ -1433,13 +1472,30 @@ private fun EntryRow(
                         modifier = Modifier.size(18.dp),
                     )
                 }
-                IconButton(onClick = onMore, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        imageVector = Icons.Rounded.MoreVert,
-                        contentDescription = "File actions",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(18.dp),
-                    )
+                if (compact) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onMore),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "File actions",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                } else {
+                    IconButton(onClick = onMore, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "File actions",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
             }
         }
@@ -1447,7 +1503,7 @@ private fun EntryRow(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = if (compact) 44.dp else 56.dp)
+                    .padding(start = if (compact) 36.dp else 56.dp)
                     .height(1.dp)
                     .background(Color.White.copy(alpha = 0.06f)),
             )
