@@ -29,6 +29,8 @@ internal object NativeBridge {
 
     external fun nativeRestore(config: String): String
 
+    external fun nativeCompress(config: String): String
+
     external fun nativeCancel()
 }
 
