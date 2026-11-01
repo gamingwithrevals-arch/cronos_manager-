@@ -1,77 +1,107 @@
-# Chronos Manager
+Chronos Manager
 
-**Unzip huge games without needing double storage.** Chronos Manager is a free Android file manager with a low-storage archive extractor. It extracts large ZIP files without needing enough space for both the original archive and the extracted game at the same time.
+One app. All your files. No compromises.
 
-Chronos Manager brings HatchZip functionality to Android. It is a fork of Chronos Zip, which is itself a fork of HatchZip, expanded into a full file manager.
+Chronos Manager is a powerful, free and feature-packed Android file manager designed to handle everything you do with your files. Browse, organize, copy, move, rename, delete, compress, extract and manage your files, all from one clean interface.
 
-## The problem
+But that's not all.
 
-Downloading a large game ZIP and extracting it normally can require almost twice its size in free storage. A 109 GB archive that extracts to 178 GB needs 287 GB free before you start.
+Chronos Manager brings HatchZip's revolutionary low-storage extraction technology to Android, allowing you to extract massive game archives without needing enough storage for both the original ZIP and the extracted files simultaneously.
 
-## How the extraction works
+Whether you're managing everyday files, organizing folders, working with archives or handling massive PC game downloads, Chronos Manager has you covered.
 
-Chronos Manager extracts the archive in place, so it doesn't need a second full copy of the data:
+Everything you need to manage your files
 
-1. **It checks your storage first.** The app calculates the free space each archive needs and tells you before anything changes. If there isn't enough room, it stops before starting.
-2. **It extracts from the end of the archive.** Each section is written out in turn, beginning with the last one.
-3. **It removes each finished section from the archive.** Once a section is extracted and saved to disk, it is cut from the original ZIP. That frees the space for the next section.
-4. **It repeats until the game is complete.** The archive shrinks as the extracted files grow, so the total space used stays close to the size of the extracted content.
+Chronos Manager isn't just an archive extractor. It's your everyday file management solution.
 
-Because the archive is trimmed as it goes, a 109 GB ZIP that extracts to 178 GB needs about 73 GB of free space, instead of 287 GB.
+File management
 
-## How much free space you need
+- Browse internal storage and accessible external storage.
+- Copy, cut, move and paste files and folders.
+- Rename files and folders.
+- Delete files and folders.
+- Create new folders and directories.
+- Create and edit text and code files.
+- Select multiple files for batch operations.
+- Split-view file browsing for easier file management.
+- View detailed file and folder information.
+- Check storage usage with a built-in storage space indicator.
+- Sort and organize files with ease.
 
-It depends on how the archive was built. Chronos Manager analyses each archive and shows the exact free space it needs before extraction starts.
+Advanced archive management
 
-| ZIP size | Free space required |
-|---|---|
-| 33 GB | 6 GB |
-| 61 GB | 21 GB |
-| 109 GB | 73 GB |
+Manage your archives without needing another application.
 
-Why the number changes:
-- **Smaller sections** that extract quickly generally need less temporary storage.
-- **Larger sections** that are harder to remove need more.
-- **Archives with many small files** can sometimes need less than 10 GB.
+- Extract ZIP, 7z, TAR, TAR.GZ and RAR archives.
+- Create ZIP archives from files and folders.
+- Browse archive contents without extracting them.
+- Batch extraction for multiple archives.
+- Pause and resume extraction.
+- Restore partially extracted archives to their original state.
 
-## Features
+Low-storage extraction technology
 
-- **Low-storage extraction** for large ZIP, 7z, TAR, TAR.GZ, and RAR archives
-- **Archive viewer:** browse what's inside an archive without extracting it
-- **Batch extract:** select several archives and extract them one after another
-- **Create ZIP:** compress selected files and folders into a new archive
-- **Pause and resume:** stop an extraction at any point and continue later
-- **Restore:** turn a partly extracted archive back into a normal archive
-- **File manager:** browse, copy, move, rename, and delete files, with split view
-- **Storage space bar** and file info for every item
-- **Create files:** make new text and code files from the app
+Extract massive archives without needing double the storage.
 
-## Installation
+Traditional extraction requires enough free space to hold both the original archive and the extracted files. This becomes a serious problem when dealing with large PC games.
 
-1. Download the latest `CronosManager-<version>.apk` from the [Releases](../../releases) page.
-2. Open the file on your phone and allow installs from your browser or file manager when Android asks.
-3. Install and open **Chronos Manager**.
+Chronos Manager uses the low-storage extraction engine inherited from HatchZip to reduce this requirement.
 
-Each release includes a `.sha256` file. To verify the download, compare its hash with the APK's SHA-256.
+How does it work?
 
-## Important notes
+1. Storage analysis: Chronos Manager analyses the archive and calculates the required free space before extraction begins.
+2. Reverse extraction: The archive is processed from the end, extracting sections one at a time.
+3. In-place archive trimming: Successfully extracted sections are removed from the original archive, freeing up storage for subsequent sections.
+4. Continuous extraction: This process repeats until all files have been extracted.
 
-- **Always check the required free space** shown by Chronos Manager before you start an extraction.
-- **Keep a backup** of anything important. Extraction changes the archive file as it goes.
-- **Android restricts some app folders.** On Android 11 and later, other apps' private folders (`Android/data` and `Android/obb`) can't be read without a tool such as Shizuku or root.
-- **Android 8.0 (API 26) or newer** is required.
+Instead of keeping the entire archive and extracted game simultaneously, the archive gradually shrinks as the extracted data grows.
 
-## Building from source
+Real-world storage examples:
 
-The app builds in GitHub Actions. The Rust engine is compiled with the Android NDK, and the Kotlin app is built with Gradle.
+Archive size| Free space required
+33 GB| 6 GB
+61 GB| 21 GB
+109 GB| 73 GB
 
-## Credits
+Requirements depend on archive structure and compression. Chronos Manager analyses each archive and displays its estimated storage requirement before extraction.
 
-- **HatchZip**: the original low-storage extraction engine.
-- **Chronos Zip**: the fork this project builds on.
-- **AizenEMU**: [youtube.com/@aizenemu](https://youtube.com/@aizenemu). If you find the app useful, please support the channel.
+Built for everyday use
 
-## License
+Chronos Manager brings essential file management and advanced archive functionality together in one application.
 
-- `LICENSE-APACHE` and `LICENSE-MIT` cover the project's own code.
-- `LICENSE-UNRAR` covers the UnRAR library used for RAR support. It restricts using UnRAR's code to build a RAR-compatible archiver.
+No need to jump between multiple apps just to manage your files.
+
+Installation
+
+1. Visit the "Releases" (../../releases) page.
+2. Download the latest "CronosManager-<version>.apk".
+3. Open the APK and allow installation when Android asks.
+4. Install and launch Chronos Manager.
+
+Each release also includes a ".sha256" file to verify the APK's integrity.
+
+Important notes
+
+- Always check the required free storage displayed before starting an extraction.
+- Keep backups of important files. Low-storage extraction modifies the original archive as it progresses.
+- Android 11 and newer restrict access to certain application directories, including "Android/data" and "Android/obb". Additional permissions or tools such as Shizuku or root may be needed.
+- Requires Android 8.0 (API 26) or newer.
+
+Building from source
+
+Chronos Manager is built using GitHub Actions.
+
+The Android application uses Kotlin and Gradle, while the native extraction engine is written in Rust and compiled for Android using the Android NDK.
+
+Credits
+
+- HatchZip: Original low-storage extraction technology.
+- Chronos Zip: The project this application is based on.
+- AizenEMU: Project support and development. "YouTube" (https://youtube.com/@aizenemu)
+
+If you find Chronos Manager useful, consider supporting the project and the channel!
+
+License
+
+- "LICENSE-APACHE" and "LICENSE-MIT" cover the project's own code.
+- "LICENSE-UNRAR" covers the UnRAR library used for RAR support. Its licensing terms restrict the use of its code to building a RAR-compatible archiver.
