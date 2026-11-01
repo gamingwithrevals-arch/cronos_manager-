@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -81,6 +82,7 @@ import com.cronoszip.app.ui.components.PrimaryButton
 import com.cronoszip.app.ui.components.ScreenHeader
 import com.cronoszip.app.ui.components.SecondaryButton
 import com.cronoszip.app.ui.components.SolidDialogCard
+import com.cronoszip.app.ui.components.StorageSpaceBar
 import com.cronoszip.app.ui.theme.CronosBlue
 import com.cronoszip.app.ui.theme.CronosCyan
 import com.cronoszip.app.ui.theme.GlassWhite
@@ -114,6 +116,24 @@ fun FileManagerScreen(
     val roots = remember(context, pinned) { managerRoots(context, pinned) }
     var split by remember { mutableStateOf(false) }
     var showStorage by remember { mutableStateOf(false) }
+    var pathA by remember { mutableStateOf("") }
+    var pathB by remember { mutableStateOf("") }
+    var refresh by remember { mutableStateOf(0) }
+
+    LaunchedEffect(roots) {
+        if (pathA.isBlank() || roots.none { it.second == pathA }) {
+            pathA = roots.firstOrNull()?.second.orEmpty()
+        }
+        if (pathB.isBlank() || roots.none { it.second == pathB }) {
+            pathB = roots.getOrNull(1)?.second ?: roots.firstOrNull()?.second.orEmpty()
+        }
+    }
+
+    // The phone back button goes up one folder in the left pane (or the only pane).
+    val upA = upPathOf(pathA)
+    BackHandler(enabled = granted && upA != null) {
+        if (upA != null) pathA = upA
+    }
 
     val legacyPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -188,9 +208,25 @@ fun FileManagerScreen(
                 }
             }
         } else if (split) {
-            SplitPanes(roots = roots, onOpenArchive = onOpenArchive)
+            SplitPanes(
+                pathA = pathA,
+                pathB = pathB,
+                onPathA = { pathA = it },
+                onPathB = { pathB = it },
+                roots = roots,
+                refreshToken = refresh,
+                onChanged = { refresh++ },
+                onOpenArchive = onOpenArchive,
+            )
         } else {
-            SinglePane(roots = roots, onOpenArchive = onOpenArchive)
+            SinglePane(
+                path = pathA,
+                onPath = { pathA = it },
+                roots = roots,
+                refreshToken = refresh,
+                onChanged = { refresh++ },
+                onOpenArchive = onOpenArchive,
+            )
         }
     }
 
@@ -203,6 +239,17 @@ fun FileManagerScreen(
             onDismiss = { showStorage = false },
         )
     }
+}
+
+/** The folder above [path], or null when there is none (the top of the storage). */
+private fun upPathOf(path: String): String? {
+    if (path.isBlank()) return null
+    val parent = if (SafStorage.isSaf(path)) {
+        SafStorage.parentTreeUri(Uri.parse(path))?.toString()
+    } else {
+        File(path).parent
+    }
+    return parent?.takeIf { it != path }
 }
 
 /**
@@ -258,12 +305,15 @@ private fun openEntry(
 
 @Composable
 private fun SinglePane(
+    path: String,
+    onPath: (String) -> Unit,
     roots: List<Pair<String, String>>,
+    refreshToken: Int,
+    onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var current by remember { mutableStateOf(roots.firstOrNull()?.second ?: "") }
     var entries by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -273,29 +323,26 @@ private fun SinglePane(
     var deleteItem by remember { mutableStateOf<FileItem?>(null) }
     var showNewFolder by remember { mutableStateOf(false) }
     var inputName by remember { mutableStateOf("") }
+    val upPath = upPathOf(path)
 
-    fun load(path: String) {
-        if (path.isBlank()) return
-        current = path
+    LaunchedEffect(path, refreshToken) {
+        if (path.isBlank()) return@LaunchedEffect
         loading = true
         error = null
-        scope.launch {
-            val items = FileListing.list(context, path)
-            if (current != path) return@launch
-            loading = false
-            if (items == null) {
-                error = "Cannot read this folder."
-                entries = emptyList()
-            } else {
-                entries = items
-            }
+        val items = FileListing.list(context, path)
+        loading = false
+        if (items == null) {
+            error = "Cannot read this folder."
+            entries = emptyList()
+        } else {
+            entries = items
         }
     }
 
     fun pasteHere() {
         val source = FileClipboard.path ?: return
         val cut = FileClipboard.cut
-        val here = current
+        val here = path
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 MixedFileOps.paste(context, here, source, cut)
@@ -307,17 +354,10 @@ private fun SinglePane(
                         FileClipboard.path = null
                         FileClipboard.cut = false
                     }
+                    onChanged()
                 }
                 .onFailure { status = it.message }
-            load(here)
         }
-    }
-
-    LaunchedEffect(roots) {
-        if (current.isBlank() || roots.none { it.second == current }) {
-            current = roots.firstOrNull()?.second ?: ""
-        }
-        if (current.isNotBlank()) load(current)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -345,15 +385,16 @@ private fun SinglePane(
         Spacer(Modifier.height(8.dp))
         LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(roots) { root ->
-                GlassChip(text = root.first, selected = current == root.second, onClick = { load(root.second) })
+                GlassChip(text = root.first, selected = path == root.second, onClick = { onPath(root.second) })
             }
         }
         Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
-            Text(text = SafStorage.locationLabel(context, current), style = MaterialTheme.typography.bodySmall, color = TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(text = SafStorage.locationLabel(context, path), style = MaterialTheme.typography.bodySmall, color = TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        StorageSpaceBar(path = path, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
         status?.let {
             Text(
                 text = it,
@@ -362,20 +403,17 @@ private fun SinglePane(
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
             )
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
         Box(modifier = Modifier.weight(1f)) {
             when {
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CronosCyan) }
-                error != null -> Box(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) { GlassCard(glow = Warning) { Text("Cannot read folder", style = MaterialTheme.typography.titleMedium, color = TextPrimary); Spacer(Modifier.height(6.dp)); Text(error ?: "", style = MaterialTheme.typography.bodySmall, color = TextSecondary); Spacer(Modifier.height(12.dp)); SecondaryButton("Try again", modifier = Modifier.fillMaxWidth(), onClick = { load(current) }) } }
+                error != null -> Box(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) { GlassCard(glow = Warning) { Text("Cannot read folder", style = MaterialTheme.typography.titleMedium, color = TextPrimary); Spacer(Modifier.height(6.dp)); Text(error ?: "", style = MaterialTheme.typography.bodySmall, color = TextSecondary); Spacer(Modifier.height(12.dp)); SecondaryButton("Try again", modifier = Modifier.fillMaxWidth(), onClick = { onChanged() }) } }
                 else -> LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                    val safParent = if (SafStorage.isSaf(current)) SafStorage.parentTreeUri(Uri.parse(current)) else null
-                    val fileParent = if (!SafStorage.isSaf(current)) File(current).parent else null
-                    val parent = safParent?.toString() ?: fileParent
-                    if (parent != null && parent != current) {
-                        item { Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { load(parent) }.background(GlassWhite.copy(alpha = 0.035f)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.Upload, contentDescription = null, tint = TextSecondary); Spacer(Modifier.width(10.dp)); Text("Up one folder", color = TextSecondary) } }
+                    if (upPath != null) {
+                        item { Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { onPath(upPath) }.background(GlassWhite.copy(alpha = 0.035f)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.Upload, contentDescription = null, tint = TextSecondary); Spacer(Modifier.width(10.dp)); Text("Up one folder", color = TextSecondary) } }
                     }
                     items(entries) { item ->
-                        GlassCard(modifier = Modifier.fillMaxWidth().clickable { openEntry(context, current, item, navigate = { load(it) }, onOpenArchive = onOpenArchive, onMessage = { status = it }) }, contentPadding = PaddingValues(14.dp)) {
+                        GlassCard(modifier = Modifier.fillMaxWidth().clickable { openEntry(context, path, item, navigate = onPath, onOpenArchive = onOpenArchive, onMessage = { status = it }) }, contentPadding = PaddingValues(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
@@ -514,7 +552,7 @@ private fun SinglePane(
                         enabled = inputName.isNotBlank(),
                         onClick = {
                             val name = inputName.trim()
-                            val here = current
+                            val here = path
                             showNewFolder = false
                             scope.launch {
                                 val result = withContext(Dispatchers.IO) {
@@ -528,7 +566,7 @@ private fun SinglePane(
                                 result
                                     .onSuccess { status = "Created $it" }
                                     .onFailure { status = it.message }
-                                load(here)
+                                onChanged()
                             }
                         },
                     )
@@ -563,7 +601,6 @@ private fun SinglePane(
                         onClick = {
                             val name = inputName.trim()
                             val target = item
-                            val here = current
                             renameItem = null
                             scope.launch {
                                 val result = withContext(Dispatchers.IO) {
@@ -577,7 +614,7 @@ private fun SinglePane(
                                 result
                                     .onSuccess { status = "Renamed to $it" }
                                     .onFailure { status = it.message }
-                                load(here)
+                                onChanged()
                             }
                         },
                     )
@@ -612,7 +649,6 @@ private fun SinglePane(
                         modifier = Modifier.weight(1f),
                         onClick = {
                             val target = item
-                            val here = current
                             deleteItem = null
                             scope.launch {
                                 val result = withContext(Dispatchers.IO) {
@@ -625,7 +661,7 @@ private fun SinglePane(
                                 result
                                     .onSuccess { status = "Deleted ${target.name}" }
                                     .onFailure { status = it.message }
-                                load(here)
+                                onChanged()
                             }
                         },
                     )
@@ -637,28 +673,35 @@ private fun SinglePane(
 
 @Composable
 private fun SplitPanes(
+    pathA: String,
+    pathB: String,
+    onPathA: (String) -> Unit,
+    onPathB: (String) -> Unit,
     roots: List<Pair<String, String>>,
+    refreshToken: Int,
+    onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
 ) {
-    var refreshToken by remember { mutableStateOf(0) }
     Row(
         modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Pane(
             modifier = Modifier.weight(1f),
+            path = pathA,
+            onPath = onPathA,
             roots = roots,
-            start = roots.firstOrNull()?.second.orEmpty(),
             refreshToken = refreshToken,
-            onChanged = { refreshToken++ },
+            onChanged = onChanged,
             onOpenArchive = onOpenArchive,
         )
         Pane(
             modifier = Modifier.weight(1f),
+            path = pathB,
+            onPath = onPathB,
             roots = roots,
-            start = roots.getOrNull(1)?.second ?: roots.firstOrNull()?.second.orEmpty(),
             refreshToken = refreshToken,
-            onChanged = { refreshToken++ },
+            onChanged = onChanged,
             onOpenArchive = onOpenArchive,
         )
     }
@@ -667,43 +710,40 @@ private fun SplitPanes(
 @Composable
 private fun Pane(
     modifier: Modifier = Modifier,
+    path: String,
+    onPath: (String) -> Unit,
     roots: List<Pair<String, String>>,
-    start: String,
     refreshToken: Int,
     onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var current by remember(start) { mutableStateOf(start) }
     var entries by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var action by remember { mutableStateOf<FileItem?>(null) }
+    val upPath = upPathOf(path)
 
-    fun load(path: String) {
-        if (path.isBlank()) return
-        current = path
+    LaunchedEffect(path, refreshToken) {
+        if (path.isBlank()) return@LaunchedEffect
         loading = true
         error = null
-        scope.launch {
-            val items = FileListing.list(context, path)
-            if (current != path) return@launch
-            loading = false
-            if (items == null) {
-                error = "Cannot read this folder."
-                entries = emptyList()
-            } else {
-                entries = items
-            }
+        val items = FileListing.list(context, path)
+        loading = false
+        if (items == null) {
+            error = "Cannot read"
+            entries = emptyList()
+        } else {
+            entries = items
         }
     }
 
     fun pasteHere() {
         val source = FileClipboard.path ?: return
         val cut = FileClipboard.cut
-        val here = current
+        val here = path
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 MixedFileOps.paste(context, here, source, cut)
@@ -718,17 +758,14 @@ private fun Pane(
                     onChanged()
                 }
                 .onFailure { status = it.message }
-            load(here)
         }
     }
-
-    LaunchedEffect(current, refreshToken) { if (current.isNotBlank()) load(current) }
 
     GlassCard(modifier = modifier.fillMaxHeight(), contentPadding = PaddingValues(8.dp)) {
         Column(modifier = Modifier.fillMaxSize()) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 6.dp)) {
                 items(roots) { root ->
-                    GlassChip(text = root.first, selected = current == root.second, onClick = { load(root.second) })
+                    GlassChip(text = root.first, selected = path == root.second, onClick = { onPath(root.second) })
                 }
                 item {
                     GlassChip(
@@ -746,7 +783,7 @@ private fun Pane(
                 Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = SafStorage.locationLabel(context, current),
+                    text = SafStorage.locationLabel(context, path),
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     maxLines = 1,
@@ -774,20 +811,17 @@ private fun Pane(
                     ) {
                         Text(error ?: "", style = MaterialTheme.typography.bodySmall, color = Warning)
                         Spacer(Modifier.height(10.dp))
-                        SecondaryButton("Try again", onClick = { load(current) })
+                        SecondaryButton("Try again", onClick = { onChanged() })
                     }
                     else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        val safParent = if (SafStorage.isSaf(current)) SafStorage.parentTreeUri(Uri.parse(current)) else null
-                        val fileParent = if (!SafStorage.isSaf(current)) File(current).parent else null
-                        val parent = safParent?.toString() ?: fileParent
-                        if (parent != null && parent != current) {
+                        if (upPath != null) {
                             item {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(12.dp))
                                         .background(GlassWhite.copy(alpha = 0.03f))
-                                        .clickable { load(parent) }
+                                        .clickable { onPath(upPath) }
                                         .padding(horizontal = 10.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
@@ -803,7 +837,7 @@ private fun Pane(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(GlassWhite.copy(alpha = 0.035f))
-                                    .clickable { openEntry(context, current, item, navigate = { load(it) }, onOpenArchive = onOpenArchive, onMessage = { status = it }) }
+                                    .clickable { openEntry(context, path, item, navigate = onPath, onOpenArchive = onOpenArchive, onMessage = { status = it }) }
                                     .padding(start = 8.dp, end = 2.dp, top = 10.dp, bottom = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
