@@ -19,8 +19,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -28,21 +28,23 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Upload
@@ -51,6 +53,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -68,9 +71,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -93,10 +101,10 @@ import com.cronoszip.app.data.PinnedLocation
 import com.cronoszip.app.data.PinnedStorage
 import com.cronoszip.app.data.SafStorage
 import com.cronoszip.app.data.SortMode
+import com.cronoszip.app.ui.components.BackCircle
 import com.cronoszip.app.ui.components.GlassCard
 import com.cronoszip.app.ui.components.GlassChip
 import com.cronoszip.app.ui.components.PrimaryButton
-import com.cronoszip.app.ui.components.ScreenHeader
 import com.cronoszip.app.ui.components.SecondaryButton
 import com.cronoszip.app.ui.components.SolidDialogCard
 import com.cronoszip.app.ui.components.StorageSpaceBar
@@ -134,12 +142,6 @@ private fun toggleSelect(sel: SelectionState, path: String) {
     if (path in sel.selected) sel.selected.remove(path) else sel.selected.add(path)
 }
 
-private fun toggleSelecting(sel: SelectionState) {
-    sel.selecting = !sel.selecting
-    if (!sel.selecting) sel.selected.clear()
-}
-
-/** Puts the selected items on the batch (copy or move) and leaves select mode. Returns the count. */
 private fun startBatch(sel: SelectionState, cut: Boolean): Int {
     val paths = sel.selected.toList()
     sel.batch = BatchClip(paths, cut)
@@ -157,11 +159,17 @@ private fun batchDone(b: BatchState): Int =
 /** The message shown when a folder can't be listed. Explains Android's restriction on app data folders. */
 private fun unreadableMessage(path: String): String =
     if (path.contains("/Android/data") || path.contains("/Android/obb")) {
-        "Android blocks other apps' private folders (Android/data and Android/obb). Chronos Manager " +
-            "cannot read them on Android 11 and later without a tool such as Shizuku or root."
+        "Android does not let Chronos Manager read other apps' private folders " +
+            "(Android/data and Android/obb) on this phone."
     } else {
-        "Cannot read this folder."
+        "This folder can't be read."
     }
+
+/** A soft, rounded surface used for every panel, so the whole screen looks consistent. */
+private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
+    .clip(RoundedCornerShape(radius))
+    .background(GlassWhite.copy(alpha = 0.05f))
+    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
 
 @Composable
 fun FileManagerScreen(
@@ -178,22 +186,29 @@ fun FileManagerScreen(
     val pinned = viewModel.pinned
     val roots = remember(context, pinned) { managerRoots(context, pinned) }
     var split by remember { mutableStateOf(false) }
-    var showStorage by remember { mutableStateOf(false) }
+    var activePane by remember { mutableStateOf(0) }
     var pathA by remember { mutableStateOf("") }
     var pathB by remember { mutableStateOf("") }
     var refresh by remember { mutableStateOf(0) }
     var message by remember { mutableStateOf<String?>(null) }
-    var confirmBatchDelete by remember { mutableStateOf(false) }
+    var showOptions by remember { mutableStateOf(false) }
+    var showStorage by remember { mutableStateOf(false) }
     var showBatch by remember { mutableStateOf(false) }
     var showCompress by remember { mutableStateOf(false) }
     var zipName by remember { mutableStateOf("Archive.zip") }
     var compressing by remember { mutableStateOf(false) }
+    var confirmBatchDelete by remember { mutableStateOf(false) }
     var showHidden by remember { mutableStateOf(false) }
     var sortMode by remember { mutableStateOf(SortMode.Name) }
     var descending by remember { mutableStateOf(false) }
     val opts = ListOptions(showHidden = showHidden, sort = sortMode, descending = descending)
     val batch by BatchExtractor.state.collectAsState()
     val sel = remember { SelectionState() }
+
+    val activePath = if (split && activePane == 1) pathB else pathA
+    fun setActivePath(path: String) {
+        if (split && activePane == 1) pathB = path else pathA = path
+    }
 
     LaunchedEffect(roots) {
         if (pathA.isBlank() || roots.none { it.second == pathA }) {
@@ -214,10 +229,10 @@ fun FileManagerScreen(
         if (batch.finished) refresh++
     }
 
-    // The phone back button goes up one folder in the left pane. In select mode it leaves select mode first.
-    val upA = upPathOf(pathA)
-    BackHandler(enabled = granted && upA != null) {
-        if (upA != null) pathA = upA
+    // The phone back button goes up one folder in the active pane. In select mode it leaves select mode first.
+    val upActive = upPathOf(activePath)
+    BackHandler(enabled = granted && upActive != null) {
+        if (upActive != null) setActivePath(upActive)
     }
     BackHandler(enabled = sel.selecting) {
         sel.selecting = false
@@ -240,100 +255,116 @@ fun FileManagerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
-        ScreenHeader(
-            title = "Chronos Manager",
-            subtitle = "Files · storage · archives",
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .padding(horizontal = 16.dp),
+    ) {
+        TopBar(
+            title = "Files",
             onBack = onBack,
-            trailing = {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(GlassWhite.copy(alpha = 0.06f))
-                        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
-                        .clickable(onClick = onSettings),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Settings,
-                        contentDescription = "Settings",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-            },
+            onMore = { showOptions = true },
         )
+        Spacer(Modifier.height(14.dp))
 
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item { GlassChip(text = "List", selected = !split, onClick = { split = false }) }
-            item { GlassChip(text = "Split view", selected = split, onClick = { split = true }) }
-            item { GlassChip(text = "Select", selected = sel.selecting, onClick = { toggleSelecting(sel) }) }
-            item { GlassChip(text = "Storage", onClick = { showStorage = true }) }
-            item { GlassChip(text = "Extract archive", onClick = onExtract) }
-            if (batch.items.isNotEmpty()) {
-                item {
-                    GlassChip(
-                        text = if (batch.running) "Batch ${batchDone(batch)}/${batch.items.size}" else "Batch done",
-                        selected = batch.running,
-                        onClick = { showBatch = true },
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.height(8.dp))
+        ModeSwitch(split = split, onChange = { split = it; activePane = 0 })
+        Spacer(Modifier.height(12.dp))
 
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item {
-                GlassChip(
-                    text = if (showHidden) "Hidden: shown" else "Hidden: hidden",
-                    selected = showHidden,
-                    onClick = { showHidden = !showHidden },
-                )
-            }
-            item {
-                GlassChip(
-                    text = "Sort: ${sortMode.label}",
-                    onClick = { sortMode = SortMode.entries[(sortMode.ordinal + 1) % SortMode.entries.size] },
-                )
-            }
-            item {
-                GlassChip(
-                    text = if (descending) "Descending" else "Ascending",
-                    onClick = { descending = !descending },
-                )
-            }
+        LocationStrip(roots = roots, activePath = activePath, onPick = { setActivePath(it) })
+        Spacer(Modifier.height(12.dp))
+
+        if (granted) {
+            PathCard(path = activePath)
+            Spacer(Modifier.height(10.dp))
         }
-        Spacer(Modifier.height(10.dp))
+
+        if (batch.items.isNotEmpty()) {
+            BatchPill(batch = batch, onClick = { showBatch = true })
+            Spacer(Modifier.height(10.dp))
+        }
 
         message?.let {
             Text(
                 text = it,
                 style = MaterialTheme.typography.bodySmall,
                 color = CronosCyan,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+                modifier = Modifier.padding(bottom = 8.dp),
             )
         }
 
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            when {
+                !granted -> PermissionCard(
+                    onAllow = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            requestAllFilesAccess(context)
+                        } else {
+                            val perms = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                            } else {
+                                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                            }
+                            legacyPermission.launch(perms)
+                        }
+                    },
+                )
+                split -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
+                    FolderView(
+                        path = pathA,
+                        onPath = { pathA = it },
+                        sel = sel,
+                        opts = opts,
+                        refreshToken = refresh,
+                        compact = true,
+                        highlighted = activePane == 0,
+                        onActivate = { activePane = 0 },
+                        onChanged = { refresh++ },
+                        onOpenArchive = onOpenArchive,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    FolderView(
+                        path = pathB,
+                        onPath = { pathB = it },
+                        sel = sel,
+                        opts = opts,
+                        refreshToken = refresh,
+                        compact = true,
+                        highlighted = activePane == 1,
+                        onActivate = { activePane = 1 },
+                        onChanged = { refresh++ },
+                        onOpenArchive = onOpenArchive,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
+                else -> FolderView(
+                    path = pathA,
+                    onPath = { pathA = it },
+                    sel = sel,
+                    opts = opts,
+                    refreshToken = refresh,
+                    compact = false,
+                    highlighted = false,
+                    onActivate = {},
+                    onChanged = { refresh++ },
+                    onOpenArchive = onOpenArchive,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+
         if (sel.selecting) {
-            val archiveCount = sel.selected.count { isLocalArchive(it) }
-            val zipCount = sel.selected.count { !SafStorage.isSaf(it) }
-            SelectionBar(
+            Spacer(Modifier.height(10.dp))
+            SelectionDock(
                 count = sel.selected.size,
-                archiveCount = archiveCount,
-                zipCount = zipCount,
+                archiveCount = sel.selected.count { isLocalArchive(it) },
+                zipCount = sel.selected.count { !SafStorage.isSaf(it) },
                 onCopy = {
                     if (sel.selected.isEmpty()) {
                         message = "Tap items to select them first."
                     } else {
                         val n = startBatch(sel, cut = false)
-                        message = "Copied $n item(s). Open a folder and tap Paste here."
+                        message = "Copied $n item(s). Open a folder and tap Paste."
                     }
                 },
                 onMove = {
@@ -341,7 +372,7 @@ fun FileManagerScreen(
                         message = "Tap items to select them first."
                     } else {
                         val n = startBatch(sel, cut = true)
-                        message = "Cut $n item(s). Open a folder and tap Move here."
+                        message = "Cut $n item(s). Open a folder and tap Paste."
                     }
                 },
                 onDelete = {
@@ -368,70 +399,48 @@ fun FileManagerScreen(
                     }
                 },
                 onZip = {
+                    val zipCount = sel.selected.count { !SafStorage.isSaf(it) }
                     if (sel.selected.isEmpty()) {
                         message = "Tap items to select them first."
                     } else if (zipCount == 0) {
                         message = "Only files on phone storage can be zipped."
-                    } else if (SafStorage.isSaf(pathA)) {
-                        message = "Open a folder on phone storage (Internal, Downloads…) in the left pane to save the zip."
+                    } else if (SafStorage.isSaf(activePath)) {
+                        message = "Open a folder on phone storage in the active pane to save the zip."
                     } else {
                         showCompress = true
                     }
                 },
-                onClear = {
+                onDone = {
                     sel.selecting = false
                     sel.selected.clear()
                 },
             )
-            Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(12.dp))
+    }
 
-        if (!granted) {
-            Box(modifier = Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
-                GlassCard(glow = CronosCyan) {
-                    Box(modifier = Modifier.size(52.dp).clip(RoundedCornerShape(16.dp)).background(CronosCyan.copy(alpha = 0.14f)).border(1.dp, CronosCyan.copy(alpha = 0.3f), RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Rounded.Shield, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(26.dp))
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Text("Storage access is needed", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Chronos Manager needs access to read files and open archives across storage.", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
-                    Spacer(Modifier.height(18.dp))
-                    PrimaryButton(text = "Allow access", icon = Icons.Rounded.Storage, modifier = Modifier.fillMaxWidth(), onClick = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) requestAllFilesAccess(context)
-                        else {
-                            val perms = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE) else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-                            legacyPermission.launch(perms)
-                        }
-                    })
-                }
-            }
-        } else if (split) {
-            SplitPanes(
-                pathA = pathA,
-                pathB = pathB,
-                onPathA = { pathA = it },
-                onPathB = { pathB = it },
-                roots = roots,
-                sel = sel,
-                opts = opts,
-                refreshToken = refresh,
-                onChanged = { refresh++ },
-                onOpenArchive = onOpenArchive,
-            )
-        } else {
-            SinglePane(
-                path = pathA,
-                onPath = { pathA = it },
-                roots = roots,
-                sel = sel,
-                opts = opts,
-                refreshToken = refresh,
-                onChanged = { refresh++ },
-                onOpenArchive = onOpenArchive,
-            )
-        }
+    if (showOptions) {
+        OptionsDialog(
+            showHidden = showHidden,
+            onHidden = { showHidden = it },
+            sortMode = sortMode,
+            onSort = { sortMode = it },
+            descending = descending,
+            onDescending = { descending = it },
+            onExtract = {
+                showOptions = false
+                onExtract()
+            },
+            onStorage = {
+                showOptions = false
+                showStorage = true
+            },
+            onSettings = {
+                showOptions = false
+                onSettings()
+            },
+            onDismiss = { showOptions = false },
+        )
     }
 
     if (showStorage) {
@@ -472,7 +481,7 @@ fun FileManagerScreen(
                 } else if (inputs.isEmpty()) {
                     message = "Nothing to zip. Select files on phone storage."
                 } else {
-                    val output = File(pathA, clean).absolutePath
+                    val output = File(activePath, clean).absolutePath
                     compressing = true
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
@@ -542,323 +551,191 @@ fun FileManagerScreen(
 }
 
 @Composable
-private fun InfoDialog(item: FileItem, onDismiss: () -> Unit) {
-    val details by produceState<FileDetails?>(initialValue = null, item.path) {
-        value = if (SafStorage.isSaf(item.path)) {
-            null
-        } else {
-            withContext(Dispatchers.IO) { FileTools.details(item.path) }
-        }
-    }
-    val d = details
-    val sizeText = when {
-        d != null -> formatBytes(d.size)
-        item.directory && SafStorage.isSaf(item.path) -> "Not available for this storage"
-        item.directory -> "Calculating…"
-        else -> formatBytes(item.size)
-    }
-    val typeText = when {
-        item.directory -> "Folder"
-        FileOpener.mimeFor(item.name) == "*/*" -> "File"
-        else -> FileOpener.mimeFor(item.name)
-    }
-    Dialog(onDismissRequest = onDismiss) {
-        SolidDialogCard(glow = CronosCyan) {
-            Text("Info", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = item.name,
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(12.dp))
-            InfoRow("Type", typeText)
-            InfoRow("Size", sizeText)
-            if (d != null && d.isDirectory) InfoRow("Items inside", "${d.items} (direct)")
-            InfoRow("Modified", formatTime(d?.modified ?: item.modified))
-            InfoRow("Hidden", yesNo(d?.hidden ?: item.name.startsWith(".")))
-            if (d != null) {
-                InfoRow("Can read", yesNo(d.readable))
-                InfoRow("Can write", yesNo(d.writable))
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("Location", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-            Text(
-                text = d?.path ?: item.path,
-                style = MaterialTheme.typography.bodySmall,
-                color = TextPrimary,
-            )
-            Spacer(Modifier.height(16.dp))
-            SecondaryButton(text = "Close", modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
-        }
-    }
-}
-
-@Composable
-private fun InfoRow(label: String, value: String) {
+private fun TopBar(title: String, onBack: (() -> Unit)?, onMore: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text = label, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.weight(1f))
-        Spacer(Modifier.width(10.dp))
-        Text(text = value, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-    }
-}
-
-private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
-
-@Composable
-private fun NewFileDialog(
-    dir: String,
-    onResult: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    var name by remember { mutableStateOf("New file.txt") }
-    var busy by remember { mutableStateOf(false) }
-    val extensions = listOf(".txt", ".md", ".json", ".html", ".csv", ".log", ".kt", ".xml")
-    Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
-        SolidDialogCard(glow = CronosCyan) {
-            Text("New file", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Spacer(Modifier.height(6.dp))
+        if (onBack != null) {
+            BackCircle(onClick = onBack)
+            Spacer(Modifier.width(12.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "The file is created in the folder you are viewing.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
+                text = "CHRONOS MANAGER",
+                style = MaterialTheme.typography.labelSmall,
+                color = CronosCyan,
+                letterSpacing = 1.4.sp,
             )
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("File name", color = TextSecondary) },
-                singleLine = true,
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineLarge,
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold,
             )
-            Spacer(Modifier.height(10.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(extensions) { ext ->
-                    GlassChip(
-                        text = ext,
-                        onClick = { name = name.substringBeforeLast('.', name) + ext },
-                    )
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SecondaryButton(
-                    text = "Cancel",
-                    modifier = Modifier.weight(1f),
-                    onClick = { if (!busy) onDismiss() },
-                )
-                PrimaryButton(
-                    text = if (busy) "Creating…" else "Create",
-                    modifier = Modifier.weight(1f),
-                    enabled = !busy && name.isNotBlank(),
-                    onClick = {
-                        busy = true
-                        val typed = name.trim()
-                        scope.launch {
-                            val result = withContext(Dispatchers.IO) {
-                                if (SafStorage.isSaf(dir)) {
-                                    "New files can only be created in phone storage folders."
-                                } else {
-                                    FileTools.createFile(File(dir), typed).fold(
-                                        onSuccess = { "Created ${it.name}." },
-                                        onFailure = { it.message ?: "The file could not be created." },
-                                    )
-                                }
-                            }
-                            busy = false
-                            onResult(result)
-                            onDismiss()
-                        }
-                    },
-                )
-            }
+        }
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(GlassWhite.copy(alpha = 0.06f))
+                .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                .clickable(onClick = onMore),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.MoreHoriz,
+                contentDescription = "Options",
+                tint = TextPrimary,
+                modifier = Modifier.size(22.dp),
+            )
         }
     }
 }
 
 @Composable
-private fun CompressDialog(
-    count: Int,
-    busy: Boolean,
-    name: String,
-    onName: (String) -> Unit,
-    onCancel: () -> Unit,
-    onCompress: () -> Unit,
+private fun ModeSwitch(split: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassSurface(50.dp)
+            .padding(4.dp),
+    ) {
+        ModeSegment(label = "Browse", selected = !split, modifier = Modifier.weight(1f)) { onChange(false) }
+        ModeSegment(label = "Split", selected = split, modifier = Modifier.weight(1f)) { onChange(true) }
+    }
+}
+
+@Composable
+private fun ModeSegment(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) CronosBlue.copy(alpha = 0.45f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) TextPrimary else TextSecondary,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+        )
+    }
+}
+
+@Composable
+private fun LocationStrip(
+    roots: List<Pair<String, String>>,
+    activePath: String,
+    onPick: (String) -> Unit,
 ) {
-    Dialog(onDismissRequest = { if (!busy) onCancel() }) {
-        SolidDialogCard(glow = CronosCyan) {
-            Text("Compress to ZIP", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "$count item(s) will be zipped into the left pane's folder. Folders include everything inside them.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(roots) { root ->
+            GlassChip(
+                text = root.first,
+                selected = activePath == root.second,
+                onClick = { onPick(root.second) },
             )
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = name,
-                onValueChange = onName,
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Archive name", color = TextSecondary) },
-                singleLine = true,
-            )
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SecondaryButton(
-                    text = "Cancel",
-                    modifier = Modifier.weight(1f),
-                    onClick = onCancel,
-                )
-                PrimaryButton(
-                    text = if (busy) "Working…" else "Compress",
-                    modifier = Modifier.weight(1f),
-                    enabled = !busy && name.isNotBlank() && count > 0,
-                    onClick = onCompress,
-                )
-            }
         }
     }
 }
 
 @Composable
-private fun BatchDialog(
-    batch: BatchState,
-    onStop: () -> Unit,
-    onHide: () -> Unit,
-    onClose: () -> Unit,
-) {
-    Dialog(onDismissRequest = { if (batch.running) onHide() else onClose() }) {
-        SolidDialogCard(glow = CronosCyan) {
-            Text("Batch extract", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = if (batch.running) {
-                    "${batchDone(batch)} of ${batch.items.size} done. Stop pauses the current archive and skips the rest."
-                } else {
-                    "Finished: ${batchDone(batch)} of ${batch.items.size}."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-            Spacer(Modifier.height(12.dp))
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 340.dp)
-                    .verticalScroll(rememberScrollState()),
-            ) {
-                batch.items.forEach { item ->
-                    BatchRow(item)
-                    Spacer(Modifier.height(6.dp))
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            if (batch.running) {
-                SecondaryButton(text = "Stop", modifier = Modifier.fillMaxWidth(), onClick = onStop)
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton(text = "Hide", modifier = Modifier.fillMaxWidth(), onClick = onHide)
-            } else {
-                PrimaryButton(text = "Close", modifier = Modifier.fillMaxWidth(), onClick = onClose)
-            }
-        }
-    }
-}
-
-@Composable
-private fun BatchRow(item: BatchItem) {
-    val color = when (item.status) {
-        BatchStatus.Done -> Success
-        BatchStatus.Failed -> Danger
-        BatchStatus.Skipped, BatchStatus.Paused -> Warning
-        BatchStatus.Working -> CronosCyan
-        BatchStatus.Waiting -> TextSecondary
-    }
-    val label = when (item.status) {
-        BatchStatus.Waiting -> "Waiting"
-        BatchStatus.Working -> "Extracting"
-        BatchStatus.Done -> "Done"
-        BatchStatus.Skipped -> "Skipped"
-        BatchStatus.Failed -> "Failed"
-        BatchStatus.Paused -> "Paused"
-    }
+private fun PathCard(path: String) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(GlassWhite.copy(alpha = 0.035f))
-            .padding(10.dp),
+            .glassSurface(20.dp)
+            .padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Rounded.FolderOpen,
+                contentDescription = null,
+                tint = CronosCyan,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
             Text(
-                text = item.name,
+                text = SafStorage.locationLabel(context, path),
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.width(8.dp))
-            Text(text = label, style = MaterialTheme.typography.labelSmall, color = color)
         }
-        if (item.message.isNotBlank()) {
+        Spacer(Modifier.height(10.dp))
+        StorageSpaceBar(path = path)
+    }
+}
+
+@Composable
+private fun BatchPill(batch: BatchState, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassSurface(50.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = if (batch.running) "Extracting ${batchDone(batch)} of ${batch.items.size}" else "Batch finished",
+            style = MaterialTheme.typography.labelLarge,
+            color = TextPrimary,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "View",
+            style = MaterialTheme.typography.labelLarge,
+            color = CronosCyan,
+        )
+    }
+}
+
+@Composable
+private fun PermissionCard(onAllow: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+        GlassCard(glow = CronosCyan) {
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(CronosCyan.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Shield,
+                    contentDescription = null,
+                    tint = CronosCyan,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("Storage access is needed", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
+            Spacer(Modifier.height(8.dp))
             Text(
-                text = item.message,
-                style = MaterialTheme.typography.labelSmall,
+                text = "Chronos Manager needs access to read files and open archives.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
+            )
+            Spacer(Modifier.height(18.dp))
+            PrimaryButton(
+                text = "Allow access",
+                icon = Icons.Rounded.Storage,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onAllow,
             )
         }
     }
 }
 
 @Composable
-private fun SplitPanes(
-    pathA: String,
-    pathB: String,
-    onPathA: (String) -> Unit,
-    onPathB: (String) -> Unit,
-    roots: List<Pair<String, String>>,
-    sel: SelectionState,
-    opts: ListOptions,
-    refreshToken: Int,
-    onChanged: () -> Unit,
-    onOpenArchive: (String) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Pane(
-            modifier = Modifier.weight(1f),
-            path = pathA,
-            onPath = onPathA,
-            roots = roots,
-            sel = sel,
-            opts = opts,
-            refreshToken = refreshToken,
-            onChanged = onChanged,
-            onOpenArchive = onOpenArchive,
-        )
-        Pane(
-            modifier = Modifier.weight(1f),
-            path = pathB,
-            onPath = onPathB,
-            roots = roots,
-            sel = sel,
-            opts = opts,
-            refreshToken = refreshToken,
-            onChanged = onChanged,
-            onOpenArchive = onOpenArchive,
-        )
-    }
-}
-
-@Composable
-private fun SelectionBar(
+private fun SelectionDock(
     count: Int,
     archiveCount: Int,
     zipCount: Int,
@@ -867,18 +744,155 @@ private fun SelectionBar(
     onDelete: () -> Unit,
     onExtract: () -> Unit,
     onZip: () -> Unit,
-    onClear: () -> Unit,
+    onDone: () -> Unit,
 ) {
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassSurface(26.dp)
+            .padding(14.dp),
     ) {
-        item { GlassChip(text = "Copy $count", selected = true, onClick = onCopy) }
-        item { GlassChip(text = "Move $count", onClick = onMove) }
-        item { GlassChip(text = "Delete $count", onClick = onDelete) }
-        item { GlassChip(text = "Extract $archiveCount", selected = archiveCount > 0, onClick = onExtract) }
-        item { GlassChip(text = "Zip $zipCount", selected = zipCount > 0, onClick = onZip) }
-        item { GlassChip(text = "Clear", onClick = onClear) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "$count selected",
+                style = MaterialTheme.typography.titleSmall,
+                color = TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "Done",
+                style = MaterialTheme.typography.labelLarge,
+                color = CronosCyan,
+                modifier = Modifier.clickable(onClick = onDone).padding(4.dp),
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { GlassChip(text = "Copy", selected = true, onClick = onCopy) }
+            item { GlassChip(text = "Move", onClick = onMove) }
+            item { GlassChip(text = "Zip", selected = zipCount > 0, onClick = onZip) }
+            item { GlassChip(text = "Extract", selected = archiveCount > 0, onClick = onExtract) }
+            item { GlassChip(text = "Delete", onClick = onDelete) }
+        }
+    }
+}
+
+@Composable
+private fun OptionsDialog(
+    showHidden: Boolean,
+    onHidden: (Boolean) -> Unit,
+    sortMode: SortMode,
+    onSort: (SortMode) -> Unit,
+    descending: Boolean,
+    onDescending: (Boolean) -> Unit,
+    onExtract: () -> Unit,
+    onStorage: () -> Unit,
+    onSettings: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("Options", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(14.dp))
+
+            SectionTitle("Show")
+            SwitchRow(label = "Hidden files", checked = showHidden, onChange = onHidden)
+
+            Spacer(Modifier.height(14.dp))
+            SectionTitle("Sort by")
+            SortMode.entries.forEach { mode ->
+                ChoiceRow(label = mode.label, selected = mode == sortMode, onClick = { onSort(mode) })
+            }
+            SwitchRow(label = "Descending", checked = descending, onChange = onDescending)
+
+            Spacer(Modifier.height(14.dp))
+            SectionTitle("Tools")
+            LinkRow(label = "Extract archive", onClick = onExtract)
+            LinkRow(label = "Storage locations", onClick = onStorage)
+            LinkRow(label = "Settings", onClick = onSettings)
+
+            Spacer(Modifier.height(16.dp))
+            SecondaryButton(text = "Done", modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
+        }
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = TextSecondary,
+        letterSpacing = 1.2.sp,
+        modifier = Modifier.padding(bottom = 6.dp),
+    )
+}
+
+@Composable
+private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = TextPrimary,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (selected) TextPrimary else TextSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        if (selected) {
+            Icon(
+                imageVector = Icons.Rounded.Check,
+                contentDescription = null,
+                tint = CronosCyan,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LinkRow(label: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = TextPrimary,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            imageVector = Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            tint = TextSecondary,
+            modifier = Modifier.size(18.dp),
+        )
     }
 }
 
@@ -945,15 +959,18 @@ private fun openEntry(
 }
 
 @Composable
-private fun SinglePane(
+private fun FolderView(
     path: String,
     onPath: (String) -> Unit,
-    roots: List<Pair<String, String>>,
     sel: SelectionState,
     opts: ListOptions,
     refreshToken: Int,
+    compact: Boolean,
+    highlighted: Boolean,
+    onActivate: () -> Unit,
     onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -999,129 +1016,88 @@ private fun SinglePane(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+    Column(
+        modifier = modifier
+            .glassSurface(if (compact) 20.dp else 24.dp)
+            .then(
+                if (highlighted && compact) {
+                    Modifier.border(1.dp, CronosCyan.copy(alpha = 0.55f), RoundedCornerShape(20.dp))
+                } else {
+                    Modifier
+                },
+            )
+            .clickable(enabled = compact) { onActivate() }
+            .padding(if (compact) 8.dp else 12.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             GlassChip(
-                text = "New folder",
+                text = "+ Folder",
                 onClick = {
                     inputName = ""
                     showNewFolder = true
                 },
             )
-            GlassChip(text = "New file", onClick = { showNewFile = true })
+            GlassChip(text = "+ File", onClick = { showNewFile = true })
             val batch = sel.batch
-            GlassChip(
-                text = if (batch?.cut == true) "Move here" else "Paste here",
-                selected = batch != null,
-                onClick = if (batch != null) {
-                    { pasteHere() }
-                } else {
-                    null
-                },
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(roots) { root ->
-                GlassChip(text = root.first, selected = path == root.second, onClick = { onPath(root.second) })
+            if (batch != null) {
+                GlassChip(text = "Paste", selected = true, onClick = { pasteHere() })
             }
         }
-        Spacer(Modifier.height(8.dp))
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(text = SafStorage.locationLabel(context, path), style = MaterialTheme.typography.bodySmall, color = TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        StorageSpaceBar(path = path, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
+
         status?.let {
             Text(
                 text = it,
                 style = MaterialTheme.typography.bodySmall,
                 color = CronosCyan,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 8.dp),
             )
         }
-        Spacer(Modifier.height(6.dp))
-        Box(modifier = Modifier.weight(1f)) {
+
+        Spacer(Modifier.height(8.dp))
+
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
-                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CronosCyan) }
-                error != null -> Box(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) { GlassCard(glow = Warning) { Text("Cannot read folder", style = MaterialTheme.typography.titleMedium, color = TextPrimary); Spacer(Modifier.height(6.dp)); Text(error ?: "", style = MaterialTheme.typography.bodySmall, color = TextSecondary); Spacer(Modifier.height(12.dp)); SecondaryButton("Try again", modifier = Modifier.fillMaxWidth(), onClick = { onChanged() }) } }
-                else -> LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
+                }
+                error != null -> Column(
+                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        text = error ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    SecondaryButton("Try again", onClick = { onChanged() })
+                }
+                else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                     if (upPath != null) {
-                        item { Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { onPath(upPath) }.background(GlassWhite.copy(alpha = 0.035f)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.Upload, contentDescription = null, tint = TextSecondary); Spacer(Modifier.width(10.dp)); Text("Up one folder", color = TextSecondary) } }
+                        item {
+                            UpRow(compact = compact, onClick = { onPath(upPath) })
+                        }
                     }
-                    items(entries) { item ->
-                        val checked = item.path in sel.selected
-                        GlassCard(
-                            modifier = Modifier.fillMaxWidth().clickable {
+                    itemsIndexed(entries, key = { _, item -> item.path }) { index, item ->
+                        EntryRow(
+                            item = item,
+                            selecting = sel.selecting,
+                            checked = item.path in sel.selected,
+                            compact = compact,
+                            divider = index < entries.lastIndex,
+                            onTap = {
                                 if (sel.selecting) {
                                     toggleSelect(sel, item.path)
                                 } else {
                                     openEntry(context, path, item, navigate = onPath, onOpenArchive = onOpenArchive, onMessage = { status = it })
                                 }
                             },
-                            contentPadding = PaddingValues(14.dp),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (sel.selecting) {
-                                    Icon(
-                                        imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                                        contentDescription = null,
-                                        tint = if (checked) CronosCyan else TextSecondary,
-                                        modifier = Modifier.size(22.dp),
-                                    )
-                                    Spacer(Modifier.width(10.dp))
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .clip(RoundedCornerShape(13.dp))
-                                        .background(
-                                            if (item.directory) {
-                                                Brush.linearGradient(
-                                                    listOf(CronosCyan.copy(alpha = 0.24f), CronosBlue.copy(alpha = 0.08f)),
-                                                )
-                                            } else {
-                                                Brush.linearGradient(
-                                                    listOf(CronosBlue.copy(alpha = 0.3f), CronosCyan.copy(alpha = 0.1f)),
-                                                )
-                                            },
-                                        )
-                                        .border(
-                                            1.dp,
-                                            if (item.directory) CronosCyan.copy(alpha = 0.25f) else CronosBlue.copy(alpha = 0.3f),
-                                            RoundedCornerShape(13.dp),
-                                        ),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(if (item.directory) Icons.Rounded.Folder else if (isArchive(item.name)) Icons.Rounded.Archive else Icons.Rounded.Description, contentDescription = null, tint = if (item.directory) CronosCyan else Color(0xFF9CC7FF))
-                                }
-                                Spacer(Modifier.width(13.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(item.name, style = MaterialTheme.typography.titleMedium, color = TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    Text(if (item.directory) "Folder" else "${formatBytes(item.size)} · ${formatTime(item.modified)}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                                }
-                                if (!sel.selecting && (item.directory || isArchive(item.name))) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.ChevronRight,
-                                        contentDescription = null,
-                                        tint = TextSecondary.copy(alpha = 0.55f),
-                                    )
-                                }
-                                if (!sel.selecting) {
-                                    IconButton(onClick = { actionItem = item }) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.MoreVert,
-                                            contentDescription = "File actions",
-                                            tint = TextSecondary,
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                            onMore = { actionItem = item },
+                        )
                     }
                 }
             }
@@ -1133,449 +1109,18 @@ private fun SinglePane(
             SolidDialogCard(glow = CronosCyan) {
                 Text(
                     text = item.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = TextPrimary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = if (item.directory) "Folder" else "File",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-                Spacer(Modifier.height(16.dp))
-                SecondaryButton(
-                    text = "Info",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        infoItem = item
-                        actionItem = null
-                    },
-                )
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton(
-                    text = "Select",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        sel.selecting = true
-                        if (item.path !in sel.selected) sel.selected.add(item.path)
-                        actionItem = null
-                    },
-                )
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton(
-                    text = "Copy",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        sel.batch = BatchClip(listOf(item.path), cut = false)
-                        status = "Copied ${item.name}. Open a folder and tap Paste here."
-                        actionItem = null
-                    },
-                )
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton(
-                    text = "Cut / move",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        sel.batch = BatchClip(listOf(item.path), cut = true)
-                        status = "Cut ${item.name}. Open a folder and tap Move here."
-                        actionItem = null
-                    },
-                )
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton(
-                    text = "Rename",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        inputName = item.name
-                        renameItem = item
-                        actionItem = null
-                    },
-                )
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton(
-                    text = "Delete",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        deleteItem = item
-                        actionItem = null
-                    },
-                )
-            }
-        }
-    }
-
-    infoItem?.let { item ->
-        InfoDialog(item = item, onDismiss = { infoItem = null })
-    }
-
-    if (showNewFile) {
-        NewFileDialog(
-            dir = path,
-            onResult = { status = it; onChanged() },
-            onDismiss = { showNewFile = false },
-        )
-    }
-
-    if (showNewFolder) {
-        Dialog(onDismissRequest = { showNewFolder = false }) {
-            SolidDialogCard(glow = CronosCyan) {
-                Text("New folder", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = inputName,
-                    onValueChange = { inputName = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("Folder name", color = TextSecondary) },
-                    singleLine = true,
-                )
-                Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SecondaryButton(
-                        text = "Cancel",
-                        modifier = Modifier.weight(1f),
-                        onClick = { showNewFolder = false },
-                    )
-                    PrimaryButton(
-                        text = "Create",
-                        modifier = Modifier.weight(1f),
-                        enabled = inputName.isNotBlank(),
-                        onClick = {
-                            val name = inputName.trim()
-                            val here = path
-                            showNewFolder = false
-                            scope.launch {
-                                val result = withContext(Dispatchers.IO) {
-                                    if (SafStorage.isSaf(here)) {
-                                        SafStorage.createFolder(context, Uri.parse(here), name)
-                                            .map { SafStorage.documentName(context, it) ?: name }
-                                    } else {
-                                        FileOperations.createFolder(File(here), name).map { it.name }
-                                    }
-                                }
-                                result
-                                    .onSuccess { status = "Created $it" }
-                                    .onFailure { status = it.message }
-                                onChanged()
-                            }
-                        },
-                    )
-                }
-            }
-        }
-    }
-
-    renameItem?.let { item ->
-        Dialog(onDismissRequest = { renameItem = null }) {
-            SolidDialogCard(glow = CronosCyan) {
-                Text("Rename", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = inputName,
-                    onValueChange = { inputName = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("New name", color = TextSecondary) },
-                    singleLine = true,
-                )
-                Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SecondaryButton(
-                        text = "Cancel",
-                        modifier = Modifier.weight(1f),
-                        onClick = { renameItem = null },
-                    )
-                    PrimaryButton(
-                        text = "Rename",
-                        modifier = Modifier.weight(1f),
-                        enabled = inputName.isNotBlank(),
-                        onClick = {
-                            val name = inputName.trim()
-                            val target = item
-                            renameItem = null
-                            scope.launch {
-                                val result = withContext(Dispatchers.IO) {
-                                    if (SafStorage.isSaf(target.path)) {
-                                        SafStorage.rename(context, Uri.parse(target.path), name)
-                                            .map { SafStorage.documentName(context, it) ?: name }
-                                    } else {
-                                        FileOperations.rename(File(target.path), name).map { it.name }
-                                    }
-                                }
-                                result
-                                    .onSuccess { status = "Renamed to $it" }
-                                    .onFailure { status = it.message }
-                                onChanged()
-                            }
-                        },
-                    )
-                }
-            }
-        }
-    }
-
-    deleteItem?.let { item ->
-        Dialog(onDismissRequest = { deleteItem = null }) {
-            SolidDialogCard(glow = Warning) {
-                Text("Delete?", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = if (item.directory) {
-                        "The folder and everything inside it will be deleted permanently."
-                    } else {
-                        "The file will be deleted permanently."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
-                )
-                Spacer(Modifier.height(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SecondaryButton(
-                        text = "Cancel",
-                        modifier = Modifier.weight(1f),
-                        onClick = { deleteItem = null },
-                    )
-                    PrimaryButton(
-                        text = "Delete",
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            val target = item
-                            deleteItem = null
-                            scope.launch {
-                                val result = withContext(Dispatchers.IO) {
-                                    if (SafStorage.isSaf(target.path)) {
-                                        SafStorage.delete(context, Uri.parse(target.path))
-                                    } else {
-                                        FileOperations.delete(File(target.path))
-                                    }
-                                }
-                                result
-                                    .onSuccess { status = "Deleted ${target.name}" }
-                                    .onFailure { status = it.message }
-                                onChanged()
-                            }
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Pane(
-    modifier: Modifier = Modifier,
-    path: String,
-    onPath: (String) -> Unit,
-    roots: List<Pair<String, String>>,
-    sel: SelectionState,
-    opts: ListOptions,
-    refreshToken: Int,
-    onChanged: () -> Unit,
-    onOpenArchive: (String) -> Unit,
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var entries by remember { mutableStateOf<List<FileItem>>(emptyList()) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var status by remember { mutableStateOf<String?>(null) }
-    var action by remember { mutableStateOf<FileItem?>(null) }
-    var infoItem by remember { mutableStateOf<FileItem?>(null) }
-    var showNewFile by remember { mutableStateOf(false) }
-    val upPath = upPathOf(path)
-
-    LaunchedEffect(path, refreshToken, opts) {
-        if (path.isBlank()) return@LaunchedEffect
-        loading = true
-        error = null
-        val items = FileListing.list(context, path, opts)
-        loading = false
-        if (items == null) {
-            error = unreadableMessage(path)
-            entries = emptyList()
-        } else {
-            entries = items
-        }
-    }
-
-    fun pasteHere() {
-        val batch = sel.batch ?: return
-        val here = path
-        scope.launch {
-            val results = withContext(Dispatchers.IO) {
-                batch.paths.map { MixedFileOps.paste(context, here, it, batch.cut) }
-            }
-            val ok = results.count { it.isSuccess }
-            val failed = results.firstOrNull { it.isFailure }?.exceptionOrNull()?.message
-            if (batch.cut && failed == null) sel.batch = null
-            status = if (failed == null) "Pasted $ok item(s)." else "Pasted $ok. Failed: $failed"
-            onChanged()
-        }
-    }
-
-    GlassCard(modifier = modifier.fillMaxHeight(), contentPadding = PaddingValues(8.dp)) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 6.dp)) {
-                items(roots) { root ->
-                    GlassChip(text = root.first, selected = path == root.second, onClick = { onPath(root.second) })
-                }
-                item { GlassChip(text = "New file", onClick = { showNewFile = true }) }
-                item {
-                    val batch = sel.batch
-                    GlassChip(
-                        text = if (batch?.cut == true) "Move here" else "Paste here",
-                        selected = batch != null,
-                        onClick = if (batch != null) {
-                            { pasteHere() }
-                        } else {
-                            null
-                        },
-                    )
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = SafStorage.locationLabel(context, path),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            status?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = CronosCyan,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Box(modifier = Modifier.weight(1f)) {
-                when {
-                    loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp) }
-                    error != null -> Column(
-                        modifier = Modifier.fillMaxSize().padding(8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Text(error ?: "", style = MaterialTheme.typography.bodySmall, color = Warning)
-                        Spacer(Modifier.height(10.dp))
-                        SecondaryButton("Try again", onClick = { onChanged() })
-                    }
-                    else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        if (upPath != null) {
-                            item {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(GlassWhite.copy(alpha = 0.03f))
-                                        .clickable { onPath(upPath) }
-                                        .padding(horizontal = 10.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(Icons.Rounded.Upload, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(10.dp))
-                                    Text("Up one folder", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
-                                }
-                            }
-                        }
-                        items(entries) { item ->
-                            val checked = item.path in sel.selected
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        if (checked) CronosCyan.copy(alpha = 0.12f) else GlassWhite.copy(alpha = 0.035f),
-                                    )
-                                    .clickable {
-                                        if (sel.selecting) {
-                                            toggleSelect(sel, item.path)
-                                        } else {
-                                            openEntry(context, path, item, navigate = onPath, onOpenArchive = onOpenArchive, onMessage = { status = it })
-                                        }
-                                    }
-                                    .padding(start = 8.dp, end = 2.dp, top = 10.dp, bottom = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                if (sel.selecting) {
-                                    Icon(
-                                        imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                                        contentDescription = null,
-                                        tint = if (checked) CronosCyan else TextSecondary,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                }
-                                Icon(
-                                    imageVector = if (item.directory) Icons.Rounded.Folder else if (isArchive(item.name)) Icons.Rounded.Archive else Icons.Rounded.Description,
-                                    contentDescription = null,
-                                    tint = if (item.directory) CronosCyan else Color(0xFF9CC7FF),
-                                    modifier = Modifier.size(22.dp),
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Column(modifier = Modifier.weight(1f).padding(end = 4.dp)) {
-                                    Text(
-                                        text = item.name,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = TextPrimary,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        text = if (item.directory) "Folder" else formatBytes(item.size),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = TextSecondary,
-                                    )
-                                }
-                                if (!sel.selecting) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .clip(CircleShape)
-                                            .clickable { action = item },
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.MoreVert,
-                                            contentDescription = "File actions",
-                                            tint = TextSecondary,
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    action?.let { item ->
-        Dialog(onDismissRequest = { action = null }) {
-            SolidDialogCard(glow = CronosCyan) {
-                Text(
-                    text = item.name,
                     style = MaterialTheme.typography.titleMedium,
                     color = TextPrimary,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(14.dp))
                 SecondaryButton(
                     text = "Info",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         infoItem = item
-                        action = null
+                        actionItem = null
                     },
                 )
                 Spacer(Modifier.height(8.dp))
@@ -1585,7 +1130,7 @@ private fun Pane(
                     onClick = {
                         sel.selecting = true
                         if (item.path !in sel.selected) sel.selected.add(item.path)
-                        action = null
+                        actionItem = null
                     },
                 )
                 Spacer(Modifier.height(8.dp))
@@ -1594,174 +1139,13 @@ private fun Pane(
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         sel.batch = BatchClip(listOf(item.path), cut = false)
-                        action = null
+                        status = "Copied ${item.name}. Open a folder and tap Paste."
+                        actionItem = null
                     },
                 )
                 Spacer(Modifier.height(8.dp))
                 SecondaryButton(
-                    text = "Cut / move",
+                    text = "Move",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        sel.batch = BatchClip(listOf(item.path), cut = true)
-                        action = null
-                    },
-                )
-            }
-        }
-    }
-
-    infoItem?.let { item ->
-        InfoDialog(item = item, onDismiss = { infoItem = null })
-    }
-
-    if (showNewFile) {
-        NewFileDialog(
-            dir = path,
-            onResult = { status = it; onChanged() },
-            onDismiss = { showNewFile = false },
-        )
-    }
-}
-
-@Composable
-private fun AddStorageDialog(
-    pinned: List<PinnedLocation>,
-    onAddTree: (String, Uri, String?) -> String?,
-    onAddPath: (String, String) -> Unit,
-    onRemove: (PinnedLocation) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val context = LocalContext.current
-    val providers = remember(context) { DocumentsProviderApps.list(context) }
-    var pendingLabel by remember { mutableStateOf("Storage") }
-    var pendingPackage by remember { mutableStateOf<String?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    val treeLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree(),
-    ) { uri ->
-        if (uri != null) {
-            error = onAddTree(pendingLabel, uri, pendingPackage)
-        }
-    }
-
-    fun pick(label: String, packageName: String?, authority: String?) {
-        pendingLabel = label
-        pendingPackage = packageName
-        error = null
-        treeLauncher.launch(authority?.let { DocumentsProviderApps.initialTreeUri(context, it) })
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        SolidDialogCard(glow = CronosCyan) {
-            Text("Add app storage", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "Pick an app that provides storage, or choose any folder. Android asks you to confirm " +
-                    "the folder once and Chronos Manager keeps that access.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-
-            if (pinned.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                pinned.forEach { pin ->
-                    val shownPath = if (pin.isRoot) pin.path else pin.treeUri?.let { SafStorage.displayName(context, it) ?: it.toString() }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(pin.label, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(shownPath ?: pin.treeUri?.toString().orEmpty(), style = MaterialTheme.typography.labelSmall, color = TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        IconButton(onClick = { onRemove(pin) }) {
-                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Remove ${pin.label}", tint = Warning, modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
-            }
-
-            error?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, style = MaterialTheme.typography.bodySmall, color = Warning)
-            }
-
-            Spacer(Modifier.height(14.dp))
-            Text("Storage apps", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-            Spacer(Modifier.height(4.dp))
-            if (providers.isEmpty()) {
-                Text("No storage apps found. Use Choose a folder instead.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-            }
-            providers.take(8).forEach { provider ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable { pick(provider.label, provider.packageName, provider.authority) }.padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Rounded.Storage, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(provider.label, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(provider.packageName, style = MaterialTheme.typography.labelSmall, color = TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(16.dp))
-                }
-            }
-
-            Spacer(Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth().clickable { pick("Storage", null, null) }.padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(10.dp))
-                Text("Choose a folder…", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().clickable {
-                    onAddPath("App storage", context.filesDir.absolutePath)
-                }.padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Folder, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(10.dp))
-                Text("Add Chronos Manager app storage", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-            }
-
-            Spacer(Modifier.height(14.dp))
-            SecondaryButton(
-                text = "Done",
-                modifier = Modifier.fillMaxWidth(),
-                onClick = onDismiss,
-            )
-        }
-    }
-}
-
-fun managerRoots(
-    context: android.content.Context,
-    pinned: List<PinnedLocation> = emptyList(),
-): List<Pair<String, String>> {
-    val list = mutableListOf<Pair<String, String>>()
-    pinned.forEach { pin ->
-        if (pin.isRoot) {
-            val path = pin.path
-            if (!path.isNullOrBlank() && File(path).canRead()) list.add(pin.label to path)
-        } else {
-            pin.treeUri?.let { list.add(pin.label to it.toString()) }
-        }
-    }
-    val external = android.os.Environment.getExternalStorageDirectory()
-    external?.let { list.add("Internal" to it.absolutePath) }
-    val download = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-    if (download != null && download.absolutePath != external?.absolutePath) list.add("Downloads" to download.absolutePath)
-    val documents = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS)
-    if (documents != null) list.add("Documents" to documents.absolutePath)
-    val movies = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES)
-    if (movies != null) list.add("Movies" to movies.absolutePath)
-    val music = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MUSIC)
-    if (music != null) list.add("Music" to music.absolutePath)
-    val pictures = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES)
-    if (pictures != null) list.add("Pictures" to pictures.absolutePath)
-    context.getExternalFilesDir(null)?.let { list.add("App storage (external)" to it.absolutePath) }
-    context.filesDir?.let { list.add("App storage (internal)" to it.absolutePath) }
-    context.cacheDir?.let { list.add("App cache" to it.absolutePath) }
-    return list.distinctBy { it.second }
-}
+                        sel.batch = BatchClip(listOf(item.pa
