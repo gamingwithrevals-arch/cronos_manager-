@@ -1,6 +1,7 @@
 package com.cronoszip.app.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Archive
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Upload
@@ -68,21 +71,23 @@ import com.cronoszip.app.data.FileClipboard
 import com.cronoszip.app.data.FileItem
 import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.FileOperations
+import com.cronoszip.app.data.MixedFileOps
 import com.cronoszip.app.data.PinnedLocation
 import com.cronoszip.app.data.PinnedStorage
-import com.cronoszip.app.data.MixedFileOps
 import com.cronoszip.app.data.SafStorage
 import com.cronoszip.app.ui.components.GlassCard
 import com.cronoszip.app.ui.components.GlassChip
 import com.cronoszip.app.ui.components.PrimaryButton
 import com.cronoszip.app.ui.components.ScreenHeader
 import com.cronoszip.app.ui.components.SecondaryButton
+import com.cronoszip.app.ui.components.SolidDialogCard
 import com.cronoszip.app.ui.theme.CronosBlue
 import com.cronoszip.app.ui.theme.CronosCyan
 import com.cronoszip.app.ui.theme.GlassWhite
 import com.cronoszip.app.ui.theme.TextPrimary
 import com.cronoszip.app.ui.theme.TextSecondary
 import com.cronoszip.app.ui.theme.Warning
+import com.cronoszip.app.util.FileOpener
 import com.cronoszip.app.util.formatBytes
 import com.cronoszip.app.util.formatTime
 import com.cronoszip.app.util.hasStorageAccess
@@ -97,8 +102,10 @@ import kotlinx.coroutines.withContext
 @Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
     onOpenArchive: (String) -> Unit,
+    onExtract: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -126,18 +133,37 @@ fun FileManagerScreen(
 
     Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
         ScreenHeader(
-            title = "Files",
-            subtitle = "Local storage · App storage · One screen",
+            title = "Chronos Manager",
+            subtitle = "Files · storage · archives",
             onBack = onBack,
+            trailing = {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(GlassWhite.copy(alpha = 0.06f))
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                        .clickable(onClick = onSettings),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Settings,
+                        contentDescription = "Settings",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            },
         )
 
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            GlassChip(text = "List", selected = !split, onClick = { split = false })
-            GlassChip(text = "Split view", selected = split, onClick = { split = true })
-            GlassChip(text = "Storage", onClick = { showStorage = true })
+            item { GlassChip(text = "List", selected = !split, onClick = { split = false }) }
+            item { GlassChip(text = "Split view", selected = split, onClick = { split = true }) }
+            item { GlassChip(text = "Storage", onClick = { showStorage = true }) }
+            item { GlassChip(text = "Extract archive", onClick = onExtract) }
         }
         Spacer(Modifier.height(10.dp))
 
@@ -150,7 +176,7 @@ fun FileManagerScreen(
                     Spacer(Modifier.height(16.dp))
                     Text("Storage access is needed", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
                     Spacer(Modifier.height(8.dp))
-                    Text("CronosZip needs access to read files and open archives across storage.", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                    Text("Chronos Manager needs access to read files and open archives across storage.", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
                     Spacer(Modifier.height(18.dp))
                     PrimaryButton(text = "Allow access", icon = Icons.Rounded.Storage, modifier = Modifier.fillMaxWidth(), onClick = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) requestAllFilesAccess(context)
@@ -177,6 +203,57 @@ fun FileManagerScreen(
             onDismiss = { showStorage = false },
         )
     }
+}
+
+/**
+ * What tapping an entry does. Folders navigate, archives go to the extraction flow, APKs and
+ * other files open in the matching Android app, and SAF documents open through the provider.
+ */
+private fun openEntry(
+    context: Context,
+    current: String,
+    item: FileItem,
+    navigate: (String) -> Unit,
+    onOpenArchive: (String) -> Unit,
+    onMessage: (String) -> Unit,
+) {
+    if (item.directory) {
+        val id = item.documentId
+        if (id != null && SafStorage.isSaf(current)) {
+            val child = SafStorage.childTreeUri(Uri.parse(current), id)
+            if (child != null) navigate(child.toString()) else onMessage("Cannot open this folder.")
+        } else {
+            navigate(item.path)
+        }
+        return
+    }
+    if (isArchive(item.name)) {
+        if (SafStorage.isSaf(item.path)) {
+            val documentUri = Uri.parse(item.path)
+            val direct = PinnedStorage.resolveDocumentPath(documentUri)
+            if (direct != null) {
+                onOpenArchive(direct)
+            } else {
+                val cached = SafStorage.copyToCache(context, documentUri, item.name)
+                if (cached != null) {
+                    onMessage("Copied ${item.name} to app cache for extraction.")
+                    onOpenArchive(cached.absolutePath)
+                } else {
+                    onMessage("Could not copy the archive out of the document provider.")
+                }
+            }
+        } else {
+            onOpenArchive(item.path)
+        }
+        return
+    }
+    if (SafStorage.isSaf(item.path)) {
+        runCatching { context.startActivity(SafStorage.viewIntent(context, Uri.parse(item.path), null)) }
+            .onFailure { onMessage(it.message ?: "No app can open this file.") }
+        return
+    }
+    FileOpener.open(context, item.path)
+        .onFailure { onMessage(it.message ?: "This file could not be opened.") }
 }
 
 @Composable
@@ -212,38 +289,6 @@ private fun SinglePane(
             } else {
                 entries = items
             }
-        }
-    }
-
-    fun open(item: FileItem) {
-        if (item.directory) {
-            if (SafStorage.isSaf(current)) {
-                val child = item.documentId?.let { SafStorage.childTreeUri(Uri.parse(current), it) }
-                if (child != null) load(child.toString()) else error = "Cannot open this folder."
-            } else {
-                load(item.path)
-            }
-        } else if (isArchive(item.name)) {
-            if (SafStorage.isSaf(item.path)) {
-                val documentUri = Uri.parse(item.path)
-                val direct = PinnedStorage.resolveDocumentPath(documentUri)
-                if (direct != null) {
-                    onOpenArchive(direct)
-                } else {
-                    val cached = SafStorage.copyToCache(context, documentUri, item.name)
-                    if (cached != null) {
-                        status = "Copied ${item.name} to app cache for extraction."
-                        onOpenArchive(cached.absolutePath)
-                    } else {
-                        status = "Could not copy the archive out of the document provider."
-                    }
-                }
-            } else {
-                onOpenArchive(item.path)
-            }
-        } else if (SafStorage.isSaf(item.path)) {
-            runCatching { context.startActivity(SafStorage.viewIntent(context, Uri.parse(item.path), null)) }
-                .onFailure { status = it.message }
         }
     }
 
@@ -291,9 +336,7 @@ private fun SinglePane(
                 text = if (FileClipboard.cut) "Move here" else "Paste",
                 selected = FileClipboard.path != null,
                 onClick = if (FileClipboard.path != null) {
-                    {
-                        pasteHere()
-                    }
+                    { pasteHere() }
                 } else {
                     null
                 },
@@ -332,7 +375,7 @@ private fun SinglePane(
                         item { Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { load(parent) }.background(GlassWhite.copy(alpha = 0.035f)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.Upload, contentDescription = null, tint = TextSecondary); Spacer(Modifier.width(10.dp)); Text("Up one folder", color = TextSecondary) } }
                     }
                     items(entries) { item ->
-                        GlassCard(modifier = Modifier.fillMaxWidth().clickable { open(item) }, contentPadding = PaddingValues(14.dp)) {
+                        GlassCard(modifier = Modifier.fillMaxWidth().clickable { openEntry(context, current, item, navigate = { load(it) }, onOpenArchive = onOpenArchive, onMessage = { status = it }) }, contentPadding = PaddingValues(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
@@ -360,7 +403,7 @@ private fun SinglePane(
                                 }
                                 Spacer(Modifier.width(13.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(item.name, style = MaterialTheme.typography.titleMedium, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(item.name, style = MaterialTheme.typography.titleMedium, color = TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                     Text(if (item.directory) "Folder" else "${formatBytes(item.size)} · ${formatTime(item.modified)}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                 }
                                 if (item.directory || isArchive(item.name)) {
@@ -387,7 +430,7 @@ private fun SinglePane(
 
     actionItem?.let { item ->
         Dialog(onDismissRequest = { actionItem = null }) {
-            GlassCard(glow = CronosCyan) {
+            SolidDialogCard(glow = CronosCyan) {
                 Text(
                     text = item.name,
                     style = MaterialTheme.typography.titleLarge,
@@ -448,7 +491,7 @@ private fun SinglePane(
 
     if (showNewFolder) {
         Dialog(onDismissRequest = { showNewFolder = false }) {
-            GlassCard(glow = CronosCyan) {
+            SolidDialogCard(glow = CronosCyan) {
                 Text("New folder", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
@@ -496,7 +539,7 @@ private fun SinglePane(
 
     renameItem?.let { item ->
         Dialog(onDismissRequest = { renameItem = null }) {
-            GlassCard(glow = CronosCyan) {
+            SolidDialogCard(glow = CronosCyan) {
                 Text("Rename", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
@@ -545,7 +588,7 @@ private fun SinglePane(
 
     deleteItem?.let { item ->
         Dialog(onDismissRequest = { deleteItem = null }) {
-            GlassCard(glow = Warning) {
+            SolidDialogCard(glow = Warning) {
                 Text("Delete?", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
                 Spacer(Modifier.height(8.dp))
                 Text(
@@ -599,8 +642,8 @@ private fun SplitPanes(
 ) {
     var refreshToken by remember { mutableStateOf(0) }
     Row(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Pane(
             modifier = Modifier.weight(1f),
@@ -636,6 +679,7 @@ private fun Pane(
     var entries by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var status by remember { mutableStateOf<String?>(null) }
     var action by remember { mutableStateOf<FileItem?>(null) }
 
     fun load(path: String) {
@@ -648,38 +692,11 @@ private fun Pane(
             if (current != path) return@launch
             loading = false
             if (items == null) {
-                error = "Cannot read"
+                error = "Cannot read this folder."
                 entries = emptyList()
             } else {
                 entries = items
             }
-        }
-    }
-
-    fun open(item: FileItem) {
-        if (item.directory) {
-            if (SafStorage.isSaf(current)) {
-                val child = item.documentId?.let { SafStorage.childTreeUri(Uri.parse(current), it) }
-                if (child != null) load(child.toString()) else error = "Cannot open"
-            } else {
-                load(item.path)
-            }
-        } else if (isArchive(item.name)) {
-            if (SafStorage.isSaf(item.path)) {
-                val documentUri = Uri.parse(item.path)
-                val direct = PinnedStorage.resolveDocumentPath(documentUri)
-                if (direct != null) {
-                    onOpenArchive(direct)
-                } else {
-                    val cached = SafStorage.copyToCache(context, documentUri, item.name)
-                    if (cached != null) onOpenArchive(cached.absolutePath) else error = "Cannot copy archive"
-                }
-            } else {
-                onOpenArchive(item.path)
-            }
-        } else if (SafStorage.isSaf(item.path)) {
-            runCatching { context.startActivity(SafStorage.viewIntent(context, Uri.parse(item.path), null)) }
-                .onFailure { error = it.message }
         }
     }
 
@@ -691,32 +708,34 @@ private fun Pane(
             val result = withContext(Dispatchers.IO) {
                 MixedFileOps.paste(context, here, source, cut)
             }
-            result.onSuccess {
-                if (cut) {
-                    FileClipboard.path = null
-                    FileClipboard.cut = false
+            result
+                .onSuccess { name ->
+                    status = "Pasted $name"
+                    if (cut) {
+                        FileClipboard.path = null
+                        FileClipboard.cut = false
+                    }
+                    onChanged()
                 }
-                onChanged()
-            }
+                .onFailure { status = it.message }
             load(here)
-            result.onFailure { error = it.message }
         }
     }
 
     LaunchedEffect(current, refreshToken) { if (current.isNotBlank()) load(current) }
 
-    GlassCard(modifier = modifier.fillMaxHeight(), contentPadding = PaddingValues(10.dp)) {
+    GlassCard(modifier = modifier.fillMaxHeight(), contentPadding = PaddingValues(8.dp)) {
         Column(modifier = Modifier.fillMaxSize()) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 6.dp)) {
-                items(roots) { root -> GlassChip(text = root.first.take(9), selected = current == root.second, onClick = { load(root.second) }) }
+                items(roots) { root ->
+                    GlassChip(text = root.first, selected = current == root.second, onClick = { load(root.second) })
+                }
                 item {
                     GlassChip(
                         text = if (FileClipboard.cut) "Move here" else "Paste",
                         selected = FileClipboard.path != null,
                         onClick = if (FileClipboard.path != null) {
-                            {
-                                pasteHere()
-                            }
+                            { pasteHere() }
                         } else {
                             null
                         },
@@ -724,35 +743,104 @@ private fun Pane(
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(14.dp))
+                Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text(text = SafStorage.locationLabel(context, current), style = MaterialTheme.typography.labelSmall, color = TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = SafStorage.locationLabel(context, current),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            Spacer(Modifier.height(6.dp))
+            status?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CronosCyan,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
             Box(modifier = Modifier.weight(1f)) {
                 when {
                     loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp) }
-                    error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(error ?: "", style = MaterialTheme.typography.bodySmall, color = Warning) }
+                    error != null -> Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Text(error ?: "", style = MaterialTheme.typography.bodySmall, color = Warning)
+                        Spacer(Modifier.height(10.dp))
+                        SecondaryButton("Try again", onClick = { load(current) })
+                    }
                     else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         val safParent = if (SafStorage.isSaf(current)) SafStorage.parentTreeUri(Uri.parse(current)) else null
                         val fileParent = if (!SafStorage.isSaf(current)) File(current).parent else null
                         val parent = safParent?.toString() ?: fileParent
                         if (parent != null && parent != current) {
-                            item { Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { load(parent) }.background(GlassWhite.copy(alpha = 0.03f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.Upload, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(8.dp)); Text("Up", color = TextSecondary, style = MaterialTheme.typography.bodySmall) } }
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(GlassWhite.copy(alpha = 0.03f))
+                                        .clickable { load(parent) }
+                                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Rounded.Upload, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(10.dp))
+                                    Text("Up one folder", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
                         }
                         items(entries) { item ->
-                            Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { open(item) }.background(GlassWhite.copy(alpha = 0.035f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Box(modifier = Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(if (item.directory) Brush.linearGradient(listOf(CronosCyan.copy(alpha = 0.22f), CronosBlue.copy(alpha = 0.08f))) else Brush.linearGradient(listOf(CronosBlue.copy(alpha = 0.26f), CronosCyan.copy(alpha = 0.1f)))), contentAlignment = Alignment.Center) {
-                                    Icon(if (item.directory) Icons.Rounded.Folder else if (isArchive(item.name)) Icons.Rounded.Archive else Icons.Rounded.Description, contentDescription = null, tint = if (item.directory) CronosCyan else Color(0xFF9CC7FF), modifier = Modifier.size(17.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(GlassWhite.copy(alpha = 0.035f))
+                                    .clickable { openEntry(context, current, item, navigate = { load(it) }, onOpenArchive = onOpenArchive, onMessage = { status = it }) }
+                                    .padding(start = 8.dp, end = 2.dp, top = 10.dp, bottom = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    imageVector = if (item.directory) Icons.Rounded.Folder else if (isArchive(item.name)) Icons.Rounded.Archive else Icons.Rounded.Description,
+                                    contentDescription = null,
+                                    tint = if (item.directory) CronosCyan else Color(0xFF9CC7FF),
+                                    modifier = Modifier.size(22.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f).padding(end = 4.dp)) {
+                                    Text(
+                                        text = item.name,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = TextPrimary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = if (item.directory) "Folder" else formatBytes(item.size),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary,
+                                    )
                                 }
-                                Spacer(Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(item.name, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(if (item.directory) "Folder" else formatBytes(item.size), style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-                                }
-                                if (item.directory || isArchive(item.name)) Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = TextSecondary.copy(alpha = 0.5f), modifier = Modifier.size(16.dp))
-                                IconButton(onClick = { action = item }, modifier = Modifier.size(32.dp)) {
-                                    Icon(Icons.Rounded.MoreVert, contentDescription = "File actions", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .clickable { action = item },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.MoreVert,
+                                        contentDescription = "File actions",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
                                 }
                             }
                         }
@@ -764,7 +852,7 @@ private fun Pane(
 
     action?.let { item ->
         Dialog(onDismissRequest = { action = null }) {
-            GlassCard(glow = CronosCyan) {
+            SolidDialogCard(glow = CronosCyan) {
                 Text(
                     text = item.name,
                     style = MaterialTheme.typography.titleMedium,
@@ -827,12 +915,12 @@ private fun AddStorageDialog(
     }
 
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(glow = CronosCyan) {
+        SolidDialogCard(glow = CronosCyan) {
             Text("Add app storage", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
             Spacer(Modifier.height(6.dp))
             Text(
                 text = "Pick an app that provides storage, or choose any folder. Android asks you to confirm " +
-                    "the folder once and CronosZip keeps that access.",
+                    "the folder once and Chronos Manager keeps that access.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
             )
@@ -896,7 +984,7 @@ private fun AddStorageDialog(
             ) {
                 Icon(Icons.Rounded.Folder, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(10.dp))
-                Text("Add CronosZip app storage", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                Text("Add Chronos Manager app storage", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
             }
 
             Spacer(Modifier.height(14.dp))
