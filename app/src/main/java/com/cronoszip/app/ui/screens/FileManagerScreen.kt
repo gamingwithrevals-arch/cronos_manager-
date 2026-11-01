@@ -59,6 +59,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -81,13 +82,17 @@ import com.cronoszip.app.data.BatchStatus
 import com.cronoszip.app.data.Compressor
 import com.cronoszip.app.data.DocumentsProviderApps
 import com.cronoszip.app.data.FileClipboard
+import com.cronoszip.app.data.FileDetails
 import com.cronoszip.app.data.FileItem
 import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.FileOperations
+import com.cronoszip.app.data.FileTools
+import com.cronoszip.app.data.ListOptions
 import com.cronoszip.app.data.MixedFileOps
 import com.cronoszip.app.data.PinnedLocation
 import com.cronoszip.app.data.PinnedStorage
 import com.cronoszip.app.data.SafStorage
+import com.cronoszip.app.data.SortMode
 import com.cronoszip.app.ui.components.GlassCard
 import com.cronoszip.app.ui.components.GlassChip
 import com.cronoszip.app.ui.components.PrimaryButton
@@ -149,6 +154,15 @@ private fun isLocalArchive(path: String): Boolean =
 private fun batchDone(b: BatchState): Int =
     b.items.count { it.status != BatchStatus.Waiting && it.status != BatchStatus.Working }
 
+/** The message shown when a folder can't be listed. Explains Android's restriction on app data folders. */
+private fun unreadableMessage(path: String): String =
+    if (path.contains("/Android/data") || path.contains("/Android/obb")) {
+        "Android blocks other apps' private folders (Android/data and Android/obb). Chronos Manager " +
+            "cannot read them on Android 11 and later without a tool such as Shizuku or root."
+    } else {
+        "Cannot read this folder."
+    }
+
 @Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
@@ -174,6 +188,10 @@ fun FileManagerScreen(
     var showCompress by remember { mutableStateOf(false) }
     var zipName by remember { mutableStateOf("Archive.zip") }
     var compressing by remember { mutableStateOf(false) }
+    var showHidden by remember { mutableStateOf(false) }
+    var sortMode by remember { mutableStateOf(SortMode.Name) }
+    var descending by remember { mutableStateOf(false) }
+    val opts = ListOptions(showHidden = showHidden, sort = sortMode, descending = descending)
     val batch by BatchExtractor.state.collectAsState()
     val sel = remember { SelectionState() }
 
@@ -264,6 +282,32 @@ fun FileManagerScreen(
                         onClick = { showBatch = true },
                     )
                 }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                GlassChip(
+                    text = if (showHidden) "Hidden: shown" else "Hidden: hidden",
+                    selected = showHidden,
+                    onClick = { showHidden = !showHidden },
+                )
+            }
+            item {
+                GlassChip(
+                    text = "Sort: ${sortMode.label}",
+                    onClick = { sortMode = SortMode.entries[(sortMode.ordinal + 1) % SortMode.entries.size] },
+                )
+            }
+            item {
+                GlassChip(
+                    text = if (descending) "Descending" else "Ascending",
+                    onClick = { descending = !descending },
+                )
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -371,6 +415,7 @@ fun FileManagerScreen(
                 onPathB = { pathB = it },
                 roots = roots,
                 sel = sel,
+                opts = opts,
                 refreshToken = refresh,
                 onChanged = { refresh++ },
                 onOpenArchive = onOpenArchive,
@@ -381,6 +426,7 @@ fun FileManagerScreen(
                 onPath = { pathA = it },
                 roots = roots,
                 sel = sel,
+                opts = opts,
                 refreshToken = refresh,
                 onChanged = { refresh++ },
                 onOpenArchive = onOpenArchive,
@@ -490,6 +536,147 @@ fun FileManagerScreen(
                         },
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoDialog(item: FileItem, onDismiss: () -> Unit) {
+    val details by produceState<FileDetails?>(initialValue = null, item.path) {
+        value = if (SafStorage.isSaf(item.path)) {
+            null
+        } else {
+            withContext(Dispatchers.IO) { FileTools.details(item.path) }
+        }
+    }
+    val d = details
+    val sizeText = when {
+        d != null -> formatBytes(d.size)
+        item.directory && SafStorage.isSaf(item.path) -> "Not available for this storage"
+        item.directory -> "Calculating…"
+        else -> formatBytes(item.size)
+    }
+    val typeText = when {
+        item.directory -> "Folder"
+        FileOpener.mimeFor(item.name) == "*/*" -> "File"
+        else -> FileOpener.mimeFor(item.name)
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("Info", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = item.name,
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(12.dp))
+            InfoRow("Type", typeText)
+            InfoRow("Size", sizeText)
+            if (d != null && d.isDirectory) InfoRow("Items inside", "${d.items} (direct)")
+            InfoRow("Modified", formatTime(d?.modified ?: item.modified))
+            InfoRow("Hidden", yesNo(d?.hidden ?: item.name.startsWith(".")))
+            if (d != null) {
+                InfoRow("Can read", yesNo(d.readable))
+                InfoRow("Can write", yesNo(d.writable))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Location", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+            Text(
+                text = d?.path ?: item.path,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(16.dp))
+            SecondaryButton(text = "Close", modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = label, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(10.dp))
+        Text(text = value, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+    }
+}
+
+private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
+
+@Composable
+private fun NewFileDialog(
+    dir: String,
+    onResult: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var name by remember { mutableStateOf("New file.txt") }
+    var busy by remember { mutableStateOf(false) }
+    val extensions = listOf(".txt", ".md", ".json", ".html", ".csv", ".log", ".kt", ".xml")
+    Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("New file", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "The file is created in the folder you are viewing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("File name", color = TextSecondary) },
+                singleLine = true,
+            )
+            Spacer(Modifier.height(10.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(extensions) { ext ->
+                    GlassChip(
+                        text = ext,
+                        onClick = { name = name.substringBeforeLast('.', name) + ext },
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SecondaryButton(
+                    text = "Cancel",
+                    modifier = Modifier.weight(1f),
+                    onClick = { if (!busy) onDismiss() },
+                )
+                PrimaryButton(
+                    text = if (busy) "Creating…" else "Create",
+                    modifier = Modifier.weight(1f),
+                    enabled = !busy && name.isNotBlank(),
+                    onClick = {
+                        busy = true
+                        val typed = name.trim()
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                if (SafStorage.isSaf(dir)) {
+                                    "New files can only be created in phone storage folders."
+                                } else {
+                                    FileTools.createFile(File(dir), typed).fold(
+                                        onSuccess = { "Created ${it.name}." },
+                                        onFailure = { it.message ?: "The file could not be created." },
+                                    )
+                                }
+                            }
+                            busy = false
+                            onResult(result)
+                            onDismiss()
+                        }
+                    },
+                )
             }
         }
     }
@@ -636,6 +823,7 @@ private fun SplitPanes(
     onPathB: (String) -> Unit,
     roots: List<Pair<String, String>>,
     sel: SelectionState,
+    opts: ListOptions,
     refreshToken: Int,
     onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
@@ -650,6 +838,7 @@ private fun SplitPanes(
             onPath = onPathA,
             roots = roots,
             sel = sel,
+            opts = opts,
             refreshToken = refreshToken,
             onChanged = onChanged,
             onOpenArchive = onOpenArchive,
@@ -660,6 +849,7 @@ private fun SplitPanes(
             onPath = onPathB,
             roots = roots,
             sel = sel,
+            opts = opts,
             refreshToken = refreshToken,
             onChanged = onChanged,
             onOpenArchive = onOpenArchive,
@@ -760,6 +950,7 @@ private fun SinglePane(
     onPath: (String) -> Unit,
     roots: List<Pair<String, String>>,
     sel: SelectionState,
+    opts: ListOptions,
     refreshToken: Int,
     onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
@@ -771,20 +962,22 @@ private fun SinglePane(
     var error by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var actionItem by remember { mutableStateOf<FileItem?>(null) }
+    var infoItem by remember { mutableStateOf<FileItem?>(null) }
     var renameItem by remember { mutableStateOf<FileItem?>(null) }
     var deleteItem by remember { mutableStateOf<FileItem?>(null) }
     var showNewFolder by remember { mutableStateOf(false) }
+    var showNewFile by remember { mutableStateOf(false) }
     var inputName by remember { mutableStateOf("") }
     val upPath = upPathOf(path)
 
-    LaunchedEffect(path, refreshToken) {
+    LaunchedEffect(path, refreshToken, opts) {
         if (path.isBlank()) return@LaunchedEffect
         loading = true
         error = null
-        val items = FileListing.list(context, path)
+        val items = FileListing.list(context, path, opts)
         loading = false
         if (items == null) {
-            error = "Cannot read this folder."
+            error = unreadableMessage(path)
             entries = emptyList()
         } else {
             entries = items
@@ -818,6 +1011,7 @@ private fun SinglePane(
                     showNewFolder = true
                 },
             )
+            GlassChip(text = "New file", onClick = { showNewFile = true })
             val batch = sel.batch
             GlassChip(
                 text = if (batch?.cut == true) "Move here" else "Paste here",
@@ -952,6 +1146,15 @@ private fun SinglePane(
                 )
                 Spacer(Modifier.height(16.dp))
                 SecondaryButton(
+                    text = "Info",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        infoItem = item
+                        actionItem = null
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(
                     text = "Select",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
@@ -1001,6 +1204,18 @@ private fun SinglePane(
                 )
             }
         }
+    }
+
+    infoItem?.let { item ->
+        InfoDialog(item = item, onDismiss = { infoItem = null })
+    }
+
+    if (showNewFile) {
+        NewFileDialog(
+            dir = path,
+            onResult = { status = it; onChanged() },
+            onDismiss = { showNewFile = false },
+        )
     }
 
     if (showNewFolder) {
@@ -1154,6 +1369,7 @@ private fun Pane(
     onPath: (String) -> Unit,
     roots: List<Pair<String, String>>,
     sel: SelectionState,
+    opts: ListOptions,
     refreshToken: Int,
     onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
@@ -1165,16 +1381,18 @@ private fun Pane(
     var error by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var action by remember { mutableStateOf<FileItem?>(null) }
+    var infoItem by remember { mutableStateOf<FileItem?>(null) }
+    var showNewFile by remember { mutableStateOf(false) }
     val upPath = upPathOf(path)
 
-    LaunchedEffect(path, refreshToken) {
+    LaunchedEffect(path, refreshToken, opts) {
         if (path.isBlank()) return@LaunchedEffect
         loading = true
         error = null
-        val items = FileListing.list(context, path)
+        val items = FileListing.list(context, path, opts)
         loading = false
         if (items == null) {
-            error = "Cannot read"
+            error = unreadableMessage(path)
             entries = emptyList()
         } else {
             entries = items
@@ -1202,6 +1420,7 @@ private fun Pane(
                 items(roots) { root ->
                     GlassChip(text = root.first, selected = path == root.second, onClick = { onPath(root.second) })
                 }
+                item { GlassChip(text = "New file", onClick = { showNewFile = true }) }
                 item {
                     val batch = sel.batch
                     GlassChip(
@@ -1241,7 +1460,7 @@ private fun Pane(
                 when {
                     loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp) }
                     error != null -> Column(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().padding(8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
@@ -1352,6 +1571,15 @@ private fun Pane(
                 )
                 Spacer(Modifier.height(12.dp))
                 SecondaryButton(
+                    text = "Info",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        infoItem = item
+                        action = null
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(
                     text = "Select",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
@@ -1380,6 +1608,18 @@ private fun Pane(
                 )
             }
         }
+    }
+
+    infoItem?.let { item ->
+        InfoDialog(item = item, onDismiss = { infoItem = null })
+    }
+
+    if (showNewFile) {
+        NewFileDialog(
+            dir = path,
+            onResult = { status = it; onChanged() },
+            onDismiss = { showNewFile = false },
+        )
     }
 }
 
