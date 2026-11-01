@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -27,8 +28,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -52,6 +55,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -70,7 +74,12 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.cronoszip.app.data.BatchExtractor
+import com.cronoszip.app.data.BatchItem
+import com.cronoszip.app.data.BatchState
+import com.cronoszip.app.data.BatchStatus
 import com.cronoszip.app.data.DocumentsProviderApps
+import com.cronoszip.app.data.FileClipboard
 import com.cronoszip.app.data.FileItem
 import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.FileOperations
@@ -87,7 +96,9 @@ import com.cronoszip.app.ui.components.SolidDialogCard
 import com.cronoszip.app.ui.components.StorageSpaceBar
 import com.cronoszip.app.ui.theme.CronosBlue
 import com.cronoszip.app.ui.theme.CronosCyan
+import com.cronoszip.app.ui.theme.Danger
 import com.cronoszip.app.ui.theme.GlassWhite
+import com.cronoszip.app.ui.theme.Success
 import com.cronoszip.app.ui.theme.TextPrimary
 import com.cronoszip.app.ui.theme.TextSecondary
 import com.cronoszip.app.ui.theme.Warning
@@ -131,6 +142,12 @@ private fun startBatch(sel: SelectionState, cut: Boolean): Int {
     return paths.size
 }
 
+private fun isLocalArchive(path: String): Boolean =
+    !SafStorage.isSaf(path) && isArchive(File(path).name)
+
+private fun batchDone(b: BatchState): Int =
+    b.items.count { it.status != BatchStatus.Waiting && it.status != BatchStatus.Working }
+
 @Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
@@ -152,6 +169,8 @@ fun FileManagerScreen(
     var refresh by remember { mutableStateOf(0) }
     var message by remember { mutableStateOf<String?>(null) }
     var confirmBatchDelete by remember { mutableStateOf(false) }
+    var showBatch by remember { mutableStateOf(false) }
+    val batch by BatchExtractor.state.collectAsState()
     val sel = remember { SelectionState() }
 
     LaunchedEffect(roots) {
@@ -166,6 +185,11 @@ fun FileManagerScreen(
     // Changing folder ends the current selection, so picks never point at the wrong folder.
     LaunchedEffect(pathA, pathB) {
         sel.selected.clear()
+    }
+
+    // When a batch finishes, refresh the lists so new folders and files appear.
+    LaunchedEffect(batch.finished) {
+        if (batch.finished) refresh++
     }
 
     // The phone back button goes up one folder in the left pane. In select mode it leaves select mode first.
@@ -228,6 +252,15 @@ fun FileManagerScreen(
             item { GlassChip(text = "Select", selected = sel.selecting, onClick = { toggleSelecting(sel) }) }
             item { GlassChip(text = "Storage", onClick = { showStorage = true }) }
             item { GlassChip(text = "Extract archive", onClick = onExtract) }
+            if (batch.items.isNotEmpty()) {
+                item {
+                    GlassChip(
+                        text = if (batch.running) "Batch ${batchDone(batch)}/${batch.items.size}" else "Batch done",
+                        selected = batch.running,
+                        onClick = { showBatch = true },
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(10.dp))
 
@@ -241,8 +274,10 @@ fun FileManagerScreen(
         }
 
         if (sel.selecting) {
+            val archiveCount = sel.selected.count { isLocalArchive(it) }
             SelectionBar(
                 count = sel.selected.size,
+                archiveCount = archiveCount,
                 onCopy = {
                     if (sel.selected.isEmpty()) {
                         message = "Tap items to select them first."
@@ -264,6 +299,22 @@ fun FileManagerScreen(
                         message = "Tap items to select them first."
                     } else {
                         confirmBatchDelete = true
+                    }
+                },
+                onExtract = {
+                    val archives = sel.selected.filter { isLocalArchive(it) }
+                    if (sel.selected.isEmpty()) {
+                        message = "Tap items to select them first."
+                    } else if (archives.isEmpty()) {
+                        message = "Select archive files (zip, 7z, tar, rar) to extract."
+                    } else if (batch.running || viewModel.extraction.value.running) {
+                        message = "Another extraction is running. Wait for it to finish."
+                    } else {
+                        val s = viewModel.settings
+                        BatchExtractor.start(archives, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault)
+                        sel.selecting = false
+                        sel.selected.clear()
+                        showBatch = true
                     }
                 },
                 onClear = {
@@ -330,6 +381,18 @@ fun FileManagerScreen(
         )
     }
 
+    if (showBatch) {
+        BatchDialog(
+            batch = batch,
+            onStop = { BatchExtractor.stop() },
+            onHide = { showBatch = false },
+            onClose = {
+                showBatch = false
+                BatchExtractor.clear()
+            },
+        )
+    }
+
     if (confirmBatchDelete) {
         Dialog(onDismissRequest = { confirmBatchDelete = false }) {
             SolidDialogCard(glow = Warning) {
@@ -379,11 +442,141 @@ fun FileManagerScreen(
 }
 
 @Composable
+private fun BatchDialog(
+    batch: BatchState,
+    onStop: () -> Unit,
+    onHide: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Dialog(onDismissRequest = { if (batch.running) onHide() else onClose() }) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("Batch extract", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = if (batch.running) {
+                    "${batchDone(batch)} of ${batch.items.size} done. Stop pauses the current archive and skips the rest."
+                } else {
+                    "Finished: ${batchDone(batch)} of ${batch.items.size}."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 340.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                batch.items.forEach { item ->
+                    BatchRow(item)
+                    Spacer(Modifier.height(6.dp))
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            if (batch.running) {
+                SecondaryButton(text = "Stop", modifier = Modifier.fillMaxWidth(), onClick = onStop)
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(text = "Hide", modifier = Modifier.fillMaxWidth(), onClick = onHide)
+            } else {
+                PrimaryButton(text = "Close", modifier = Modifier.fillMaxWidth(), onClick = onClose)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BatchRow(item: BatchItem) {
+    val color = when (item.status) {
+        BatchStatus.Done -> Success
+        BatchStatus.Failed -> Danger
+        BatchStatus.Skipped, BatchStatus.Paused -> Warning
+        BatchStatus.Working -> CronosCyan
+        BatchStatus.Waiting -> TextSecondary
+    }
+    val label = when (item.status) {
+        BatchStatus.Waiting -> "Waiting"
+        BatchStatus.Working -> "Extracting"
+        BatchStatus.Done -> "Done"
+        BatchStatus.Skipped -> "Skipped"
+        BatchStatus.Failed -> "Failed"
+        BatchStatus.Paused -> "Paused"
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(GlassWhite.copy(alpha = 0.035f))
+            .padding(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = item.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(text = label, style = MaterialTheme.typography.labelSmall, color = color)
+        }
+        if (item.message.isNotBlank()) {
+            Text(
+                text = item.message,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SplitPanes(
+    pathA: String,
+    pathB: String,
+    onPathA: (String) -> Unit,
+    onPathB: (String) -> Unit,
+    roots: List<Pair<String, String>>,
+    sel: SelectionState,
+    refreshToken: Int,
+    onChanged: () -> Unit,
+    onOpenArchive: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Pane(
+            modifier = Modifier.weight(1f),
+            path = pathA,
+            onPath = onPathA,
+            roots = roots,
+            sel = sel,
+            refreshToken = refreshToken,
+            onChanged = onChanged,
+            onOpenArchive = onOpenArchive,
+        )
+        Pane(
+            modifier = Modifier.weight(1f),
+            path = pathB,
+            onPath = onPathB,
+            roots = roots,
+            sel = sel,
+            refreshToken = refreshToken,
+            onChanged = onChanged,
+            onOpenArchive = onOpenArchive,
+        )
+    }
+}
+
+@Composable
 private fun SelectionBar(
     count: Int,
+    archiveCount: Int,
     onCopy: () -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit,
+    onExtract: () -> Unit,
     onClear: () -> Unit,
 ) {
     LazyRow(
@@ -393,6 +586,7 @@ private fun SelectionBar(
         item { GlassChip(text = "Copy $count", selected = true, onClick = onCopy) }
         item { GlassChip(text = "Move $count", onClick = onMove) }
         item { GlassChip(text = "Delete $count", onClick = onDelete) }
+        item { GlassChip(text = "Extract $archiveCount", selected = archiveCount > 0, onClick = onExtract) }
         item { GlassChip(text = "Clear", onClick = onClear) }
     }
 }
@@ -849,45 +1043,6 @@ private fun SinglePane(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun SplitPanes(
-    pathA: String,
-    pathB: String,
-    onPathA: (String) -> Unit,
-    onPathB: (String) -> Unit,
-    roots: List<Pair<String, String>>,
-    sel: SelectionState,
-    refreshToken: Int,
-    onChanged: () -> Unit,
-    onOpenArchive: (String) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Pane(
-            modifier = Modifier.weight(1f),
-            path = pathA,
-            onPath = onPathA,
-            roots = roots,
-            sel = sel,
-            refreshToken = refreshToken,
-            onChanged = onChanged,
-            onOpenArchive = onOpenArchive,
-        )
-        Pane(
-            modifier = Modifier.weight(1f),
-            path = pathB,
-            onPath = onPathB,
-            roots = roots,
-            sel = sel,
-            refreshToken = refreshToken,
-            onChanged = onChanged,
-            onOpenArchive = onOpenArchive,
-        )
     }
 }
 
