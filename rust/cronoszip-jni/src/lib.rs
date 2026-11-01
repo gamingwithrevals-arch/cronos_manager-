@@ -2,6 +2,8 @@
 //! plus one callback for live progress. All decisions (space, safety,
 //! resuming) are the engine's; this file only reports them.
 
+mod compress;
+
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -713,6 +715,11 @@ fn restore_inner(cfg: RestoreConfig) -> Result<Value> {
     }))
 }
 
+fn compress_inner(cfg: compress::CompressConfig) -> Result<Value> {
+    let (entries, bytes) = compress::compress(cfg)?;
+    Ok(json!({ "entries": entries, "bytes": bytes }))
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_cronoszip_app_engine_NativeBridge_nativeCheck<'local>(
     mut env: JNIEnv<'local>,
@@ -834,6 +841,19 @@ pub extern "system" fn Java_com_cronoszip_app_engine_NativeBridge_nativeRestore<
     config: JString<'local>,
 ) -> jstring {
     let result = parse_config::<RestoreConfig>(&mut env, &config).and_then(restore_inner);
+    match result {
+        Ok(data) => reply(&mut env, ok_value(data)),
+        Err(error) => reply(&mut env, error_value(&EngineError::from(error))),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_cronoszip_app_engine_NativeBridge_nativeCompress<'local>(
+    mut env: JNIEnv<'local>,
+    _this: JObject<'local>,
+    config: JString<'local>,
+) -> jstring {
+    let result = parse_config::<compress::CompressConfig>(&mut env, &config).and_then(compress_inner);
     match result {
         Ok(data) => reply(&mut env, ok_value(data)),
         Err(error) => reply(&mut env, error_value(&EngineError::from(error))),
