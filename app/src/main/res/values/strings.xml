@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">CronosZip</string>
-    <string name="app_tagline">Extract huge archives, in place.</string>
+    <string name="app_name">Cronos Manager</string>
+    <string name="app_tagline">Extract huge archives and aio file manager, in place.</string>
 </resources>
