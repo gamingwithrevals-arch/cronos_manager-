@@ -10,7 +10,8 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.cronoszip.app"
+        // A separate package from CronosZip, so both apps can be installed side by side.
+        applicationId = "com.gamingwithrevals.chronosmanager"
         minSdk = 26
         targetSdk = 35
         // Monotonic, time-based code so every build installs over the previous one.
