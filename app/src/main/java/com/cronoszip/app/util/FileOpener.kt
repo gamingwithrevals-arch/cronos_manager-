@@ -5,21 +5,34 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
+import com.cronoszip.app.ui.viewer.ViewerActivity
+import com.cronoszip.app.ui.viewer.ViewerTypes
 import java.io.File
 import java.util.Locale
 
 /**
- * Opens a local file in whichever app handles its type. An .apk opens Android's installer,
- * which asks the user to confirm the install.
+ * Opens a local file. Text and photos open in Chronos Manager's own viewer. An .apk opens
+ * Android's installer. Everything else opens in whichever app handles its type.
  */
 object FileOpener {
     fun open(context: Context, path: String): Result<Unit> = runCatching {
         val file = File(path)
         if (!file.isFile) throw IllegalArgumentException("This item is not a file.")
+
+        if (ViewerTypes.isText(file.name) || ViewerTypes.isImage(file.name)) {
+            context.startActivity(
+                Intent(context, ViewerActivity::class.java).apply {
+                    putExtra(ViewerActivity.EXTRA_PATH, file.absolutePath)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+            return@runCatching
+        }
+
         val uri: Uri = try {
             FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
         } catch (error: IllegalArgumentException) {
-            throw IllegalArgumentException("This file is on storage CronosZip cannot share yet.")
+            throw IllegalArgumentException("This file is on storage Chronos Manager cannot share yet.")
         }
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, mimeFor(file.name))
