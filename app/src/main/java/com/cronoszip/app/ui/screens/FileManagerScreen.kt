@@ -31,12 +31,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Storage
@@ -51,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -68,7 +71,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.cronoszip.app.data.DocumentsProviderApps
-import com.cronoszip.app.data.FileClipboard
 import com.cronoszip.app.data.FileItem
 import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.FileOperations
@@ -101,6 +103,34 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Items picked in select mode, shared by both panes. */
+private class SelectionState {
+    var selecting by mutableStateOf(false)
+    val selected = mutableStateListOf<String>()
+    var batch by mutableStateOf<BatchClip?>(null)
+}
+
+/** Items waiting to be pasted: copied (cut = false) or moved (cut = true). */
+private data class BatchClip(val paths: List<String>, val cut: Boolean)
+
+private fun toggleSelect(sel: SelectionState, path: String) {
+    if (path in sel.selected) sel.selected.remove(path) else sel.selected.add(path)
+}
+
+private fun toggleSelecting(sel: SelectionState) {
+    sel.selecting = !sel.selecting
+    if (!sel.selecting) sel.selected.clear()
+}
+
+/** Puts the selected items on the batch (copy or move) and leaves select mode. Returns the count. */
+private fun startBatch(sel: SelectionState, cut: Boolean): Int {
+    val paths = sel.selected.toList()
+    sel.batch = BatchClip(paths, cut)
+    sel.selecting = false
+    sel.selected.clear()
+    return paths.size
+}
+
 @Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
@@ -110,6 +140,7 @@ fun FileManagerScreen(
     onSettings: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
     var granted by remember { mutableStateOf(hasStorageAccess(context)) }
     val pinned = viewModel.pinned
@@ -119,6 +150,9 @@ fun FileManagerScreen(
     var pathA by remember { mutableStateOf("") }
     var pathB by remember { mutableStateOf("") }
     var refresh by remember { mutableStateOf(0) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var confirmBatchDelete by remember { mutableStateOf(false) }
+    val sel = remember { SelectionState() }
 
     LaunchedEffect(roots) {
         if (pathA.isBlank() || roots.none { it.second == pathA }) {
@@ -129,10 +163,19 @@ fun FileManagerScreen(
         }
     }
 
-    // The phone back button goes up one folder in the left pane (or the only pane).
+    // Changing folder ends the current selection, so picks never point at the wrong folder.
+    LaunchedEffect(pathA, pathB) {
+        sel.selected.clear()
+    }
+
+    // The phone back button goes up one folder in the left pane. In select mode it leaves select mode first.
     val upA = upPathOf(pathA)
     BackHandler(enabled = granted && upA != null) {
         if (upA != null) pathA = upA
+    }
+    BackHandler(enabled = sel.selecting) {
+        sel.selecting = false
+        sel.selected.clear()
     }
 
     val legacyPermission = rememberLauncherForActivityResult(
@@ -182,10 +225,55 @@ fun FileManagerScreen(
         ) {
             item { GlassChip(text = "List", selected = !split, onClick = { split = false }) }
             item { GlassChip(text = "Split view", selected = split, onClick = { split = true }) }
+            item { GlassChip(text = "Select", selected = sel.selecting, onClick = { toggleSelecting(sel) }) }
             item { GlassChip(text = "Storage", onClick = { showStorage = true }) }
             item { GlassChip(text = "Extract archive", onClick = onExtract) }
         }
         Spacer(Modifier.height(10.dp))
+
+        message?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = CronosCyan,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+            )
+        }
+
+        if (sel.selecting) {
+            SelectionBar(
+                count = sel.selected.size,
+                onCopy = {
+                    if (sel.selected.isEmpty()) {
+                        message = "Tap items to select them first."
+                    } else {
+                        val n = startBatch(sel, cut = false)
+                        message = "Copied $n item(s). Open a folder and tap Paste here."
+                    }
+                },
+                onMove = {
+                    if (sel.selected.isEmpty()) {
+                        message = "Tap items to select them first."
+                    } else {
+                        val n = startBatch(sel, cut = true)
+                        message = "Cut $n item(s). Open a folder and tap Move here."
+                    }
+                },
+                onDelete = {
+                    if (sel.selected.isEmpty()) {
+                        message = "Tap items to select them first."
+                    } else {
+                        confirmBatchDelete = true
+                    }
+                },
+                onClear = {
+                    sel.selecting = false
+                    sel.selected.clear()
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        Spacer(Modifier.height(4.dp))
 
         if (!granted) {
             Box(modifier = Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
@@ -214,6 +302,7 @@ fun FileManagerScreen(
                 onPathA = { pathA = it },
                 onPathB = { pathB = it },
                 roots = roots,
+                sel = sel,
                 refreshToken = refresh,
                 onChanged = { refresh++ },
                 onOpenArchive = onOpenArchive,
@@ -223,6 +312,7 @@ fun FileManagerScreen(
                 path = pathA,
                 onPath = { pathA = it },
                 roots = roots,
+                sel = sel,
                 refreshToken = refresh,
                 onChanged = { refresh++ },
                 onOpenArchive = onOpenArchive,
@@ -238,6 +328,72 @@ fun FileManagerScreen(
             onRemove = { viewModel.removePinned(it) },
             onDismiss = { showStorage = false },
         )
+    }
+
+    if (confirmBatchDelete) {
+        Dialog(onDismissRequest = { confirmBatchDelete = false }) {
+            SolidDialogCard(glow = Warning) {
+                Text("Delete ${sel.selected.size} item(s)?", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "They will be deleted permanently. Folders are deleted with everything inside them.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary,
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SecondaryButton(
+                        text = "Cancel",
+                        modifier = Modifier.weight(1f),
+                        onClick = { confirmBatchDelete = false },
+                    )
+                    PrimaryButton(
+                        text = "Delete",
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            val paths = sel.selected.toList()
+                            confirmBatchDelete = false
+                            sel.selecting = false
+                            sel.selected.clear()
+                            scope.launch {
+                                val results = withContext(Dispatchers.IO) {
+                                    paths.map { p ->
+                                        if (SafStorage.isSaf(p)) SafStorage.delete(context, Uri.parse(p))
+                                        else FileOperations.delete(File(p))
+                                    }
+                                }
+                                val failed = results.count { it.isFailure }
+                                message = if (failed == 0) {
+                                    "Deleted ${paths.size} item(s)."
+                                } else {
+                                    "Deleted ${paths.size - failed}. $failed failed."
+                                }
+                                refresh++
+                            }
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectionBar(
+    count: Int,
+    onCopy: () -> Unit,
+    onMove: () -> Unit,
+    onDelete: () -> Unit,
+    onClear: () -> Unit,
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item { GlassChip(text = "Copy $count", selected = true, onClick = onCopy) }
+        item { GlassChip(text = "Move $count", onClick = onMove) }
+        item { GlassChip(text = "Delete $count", onClick = onDelete) }
+        item { GlassChip(text = "Clear", onClick = onClear) }
     }
 }
 
@@ -308,6 +464,7 @@ private fun SinglePane(
     path: String,
     onPath: (String) -> Unit,
     roots: List<Pair<String, String>>,
+    sel: SelectionState,
     refreshToken: Int,
     onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
@@ -340,23 +497,17 @@ private fun SinglePane(
     }
 
     fun pasteHere() {
-        val source = FileClipboard.path ?: return
-        val cut = FileClipboard.cut
+        val batch = sel.batch ?: return
         val here = path
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                MixedFileOps.paste(context, here, source, cut)
+            val results = withContext(Dispatchers.IO) {
+                batch.paths.map { MixedFileOps.paste(context, here, it, batch.cut) }
             }
-            result
-                .onSuccess { name ->
-                    status = "Pasted $name"
-                    if (cut) {
-                        FileClipboard.path = null
-                        FileClipboard.cut = false
-                    }
-                    onChanged()
-                }
-                .onFailure { status = it.message }
+            val ok = results.count { it.isSuccess }
+            val failed = results.firstOrNull { it.isFailure }?.exceptionOrNull()?.message
+            if (batch.cut && failed == null) sel.batch = null
+            status = if (failed == null) "Pasted $ok item(s)." else "Pasted $ok. Failed: $failed"
+            onChanged()
         }
     }
 
@@ -372,10 +523,11 @@ private fun SinglePane(
                     showNewFolder = true
                 },
             )
+            val batch = sel.batch
             GlassChip(
-                text = if (FileClipboard.cut) "Move here" else "Paste",
-                selected = FileClipboard.path != null,
-                onClick = if (FileClipboard.path != null) {
+                text = if (batch?.cut == true) "Move here" else "Paste here",
+                selected = batch != null,
+                onClick = if (batch != null) {
                     { pasteHere() }
                 } else {
                     null
@@ -413,8 +565,27 @@ private fun SinglePane(
                         item { Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { onPath(upPath) }.background(GlassWhite.copy(alpha = 0.035f)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.Upload, contentDescription = null, tint = TextSecondary); Spacer(Modifier.width(10.dp)); Text("Up one folder", color = TextSecondary) } }
                     }
                     items(entries) { item ->
-                        GlassCard(modifier = Modifier.fillMaxWidth().clickable { openEntry(context, path, item, navigate = onPath, onOpenArchive = onOpenArchive, onMessage = { status = it }) }, contentPadding = PaddingValues(14.dp)) {
+                        val checked = item.path in sel.selected
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                if (sel.selecting) {
+                                    toggleSelect(sel, item.path)
+                                } else {
+                                    openEntry(context, path, item, navigate = onPath, onOpenArchive = onOpenArchive, onMessage = { status = it })
+                                }
+                            },
+                            contentPadding = PaddingValues(14.dp),
+                        ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (sel.selecting) {
+                                    Icon(
+                                        imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                                        contentDescription = null,
+                                        tint = if (checked) CronosCyan else TextSecondary,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                }
                                 Box(
                                     modifier = Modifier
                                         .size(42.dp)
@@ -444,19 +615,21 @@ private fun SinglePane(
                                     Text(item.name, style = MaterialTheme.typography.titleMedium, color = TextPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                     Text(if (item.directory) "Folder" else "${formatBytes(item.size)} · ${formatTime(item.modified)}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                 }
-                                if (item.directory || isArchive(item.name)) {
+                                if (!sel.selecting && (item.directory || isArchive(item.name))) {
                                     Icon(
                                         imageVector = Icons.Rounded.ChevronRight,
                                         contentDescription = null,
                                         tint = TextSecondary.copy(alpha = 0.55f),
                                     )
                                 }
-                                IconButton(onClick = { actionItem = item }) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.MoreVert,
-                                        contentDescription = "File actions",
-                                        tint = TextSecondary,
-                                    )
+                                if (!sel.selecting) {
+                                    IconButton(onClick = { actionItem = item }) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.MoreVert,
+                                            contentDescription = "File actions",
+                                            tint = TextSecondary,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -484,12 +657,21 @@ private fun SinglePane(
                 )
                 Spacer(Modifier.height(16.dp))
                 SecondaryButton(
+                    text = "Select",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        sel.selecting = true
+                        if (item.path !in sel.selected) sel.selected.add(item.path)
+                        actionItem = null
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(
                     text = "Copy",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        FileClipboard.path = item.path
-                        FileClipboard.cut = false
-                        status = "Copied ${item.name}. Open another folder and tap Paste."
+                        sel.batch = BatchClip(listOf(item.path), cut = false)
+                        status = "Copied ${item.name}. Open a folder and tap Paste here."
                         actionItem = null
                     },
                 )
@@ -498,9 +680,8 @@ private fun SinglePane(
                     text = "Cut / move",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        FileClipboard.path = item.path
-                        FileClipboard.cut = true
-                        status = "Cut ${item.name}. Open the destination and tap Move here."
+                        sel.batch = BatchClip(listOf(item.path), cut = true)
+                        status = "Cut ${item.name}. Open a folder and tap Move here."
                         actionItem = null
                     },
                 )
@@ -678,6 +859,7 @@ private fun SplitPanes(
     onPathA: (String) -> Unit,
     onPathB: (String) -> Unit,
     roots: List<Pair<String, String>>,
+    sel: SelectionState,
     refreshToken: Int,
     onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
@@ -691,6 +873,7 @@ private fun SplitPanes(
             path = pathA,
             onPath = onPathA,
             roots = roots,
+            sel = sel,
             refreshToken = refreshToken,
             onChanged = onChanged,
             onOpenArchive = onOpenArchive,
@@ -700,6 +883,7 @@ private fun SplitPanes(
             path = pathB,
             onPath = onPathB,
             roots = roots,
+            sel = sel,
             refreshToken = refreshToken,
             onChanged = onChanged,
             onOpenArchive = onOpenArchive,
@@ -713,6 +897,7 @@ private fun Pane(
     path: String,
     onPath: (String) -> Unit,
     roots: List<Pair<String, String>>,
+    sel: SelectionState,
     refreshToken: Int,
     onChanged: () -> Unit,
     onOpenArchive: (String) -> Unit,
@@ -741,23 +926,17 @@ private fun Pane(
     }
 
     fun pasteHere() {
-        val source = FileClipboard.path ?: return
-        val cut = FileClipboard.cut
+        val batch = sel.batch ?: return
         val here = path
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                MixedFileOps.paste(context, here, source, cut)
+            val results = withContext(Dispatchers.IO) {
+                batch.paths.map { MixedFileOps.paste(context, here, it, batch.cut) }
             }
-            result
-                .onSuccess { name ->
-                    status = "Pasted $name"
-                    if (cut) {
-                        FileClipboard.path = null
-                        FileClipboard.cut = false
-                    }
-                    onChanged()
-                }
-                .onFailure { status = it.message }
+            val ok = results.count { it.isSuccess }
+            val failed = results.firstOrNull { it.isFailure }?.exceptionOrNull()?.message
+            if (batch.cut && failed == null) sel.batch = null
+            status = if (failed == null) "Pasted $ok item(s)." else "Pasted $ok. Failed: $failed"
+            onChanged()
         }
     }
 
@@ -768,10 +947,11 @@ private fun Pane(
                     GlassChip(text = root.first, selected = path == root.second, onClick = { onPath(root.second) })
                 }
                 item {
+                    val batch = sel.batch
                     GlassChip(
-                        text = if (FileClipboard.cut) "Move here" else "Paste",
-                        selected = FileClipboard.path != null,
-                        onClick = if (FileClipboard.path != null) {
+                        text = if (batch?.cut == true) "Move here" else "Paste here",
+                        selected = batch != null,
+                        onClick = if (batch != null) {
                             { pasteHere() }
                         } else {
                             null
@@ -832,15 +1012,33 @@ private fun Pane(
                             }
                         }
                         items(entries) { item ->
+                            val checked = item.path in sel.selected
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(GlassWhite.copy(alpha = 0.035f))
-                                    .clickable { openEntry(context, path, item, navigate = onPath, onOpenArchive = onOpenArchive, onMessage = { status = it }) }
+                                    .background(
+                                        if (checked) CronosCyan.copy(alpha = 0.12f) else GlassWhite.copy(alpha = 0.035f),
+                                    )
+                                    .clickable {
+                                        if (sel.selecting) {
+                                            toggleSelect(sel, item.path)
+                                        } else {
+                                            openEntry(context, path, item, navigate = onPath, onOpenArchive = onOpenArchive, onMessage = { status = it })
+                                        }
+                                    }
                                     .padding(start = 8.dp, end = 2.dp, top = 10.dp, bottom = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                if (sel.selecting) {
+                                    Icon(
+                                        imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                                        contentDescription = null,
+                                        tint = if (checked) CronosCyan else TextSecondary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                }
                                 Icon(
                                     imageVector = if (item.directory) Icons.Rounded.Folder else if (isArchive(item.name)) Icons.Rounded.Archive else Icons.Rounded.Description,
                                     contentDescription = null,
@@ -862,19 +1060,21 @@ private fun Pane(
                                         color = TextSecondary,
                                     )
                                 }
-                                Box(
-                                    modifier = Modifier
-                                        .size(28.dp)
-                                        .clip(CircleShape)
-                                        .clickable { action = item },
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.MoreVert,
-                                        contentDescription = "File actions",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(18.dp),
-                                    )
+                                if (!sel.selecting) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .clickable { action = item },
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.MoreVert,
+                                            contentDescription = "File actions",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -896,11 +1096,20 @@ private fun Pane(
                 )
                 Spacer(Modifier.height(12.dp))
                 SecondaryButton(
+                    text = "Select",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        sel.selecting = true
+                        if (item.path !in sel.selected) sel.selected.add(item.path)
+                        action = null
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(
                     text = "Copy",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        FileClipboard.path = item.path
-                        FileClipboard.cut = false
+                        sel.batch = BatchClip(listOf(item.path), cut = false)
                         action = null
                     },
                 )
@@ -909,8 +1118,7 @@ private fun Pane(
                     text = "Cut / move",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        FileClipboard.path = item.path
-                        FileClipboard.cut = true
+                        sel.batch = BatchClip(listOf(item.path), cut = true)
                         action = null
                     },
                 )
