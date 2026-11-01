@@ -19,8 +19,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -582,7 +582,7 @@ private fun TopBar(title: String, onBack: (() -> Unit)?, onMore: () -> Unit) {
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "CHRONOS MANAGER",
+                text = "CRONOS MANAGER",
                 style = MaterialTheme.typography.labelSmall,
                 color = CronosCyan,
                 letterSpacing = 1.4.sp,
@@ -1386,7 +1386,7 @@ private fun UpRow(compact: Boolean, onClick: () -> Unit) {
             tint = TextSecondary,
             modifier = Modifier.size(if (compact) 16.dp else 18.dp),
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
         Text(
             text = "Up one folder",
             style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
@@ -1782,6 +1782,48 @@ private fun BatchRow(item: BatchItem) {
                 color = TextSecondary,
             )
         }
+    }
+}
+
+@Composable
+private fun SplitPanes(
+    pathA: String,
+    pathB: String,
+    onPathA: (String) -> Unit,
+    onPathB: (String) -> Unit,
+    roots: List<Pair<String, String>>,
+    sel: SelectionState,
+    opts: ListOptions,
+    refreshToken: Int,
+    onChanged: () -> Unit,
+    onOpenArchive: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Pane(
+            modifier = Modifier.weight(1f),
+            path = pathA,
+            onPath = onPathA,
+            roots = roots,
+            sel = sel,
+            opts = opts,
+            refreshToken = refreshToken,
+            onChanged = onChanged,
+            onOpenArchive = onOpenArchive,
+        )
+        Pane(
+            modifier = Modifier.weight(1f),
+            path = pathB,
+            onPath = onPathB,
+            roots = roots,
+            sel = sel,
+            opts = opts,
+            refreshToken = refreshToken,
+            onChanged = onChanged,
+            onOpenArchive = onOpenArchive,
+        )
     }
 }
 
