@@ -1,14 +1,14 @@
-Chronos Manager
+Cronos Manager
 
 One app. All your files. No compromises.
 
-Chronos Manager is a powerful, free and feature-packed Android file manager designed to handle everything you do with your files. Browse, organize, copy, move, rename, delete, compress, extract and manage your files, all from one clean interface.
+Cronos Manager is a powerful, free and feature-packed Android file manager designed to handle everything you do with your files. Browse, organize, copy, move, rename, delete, compress, extract and manage your files, all from one clean interface.
 
 But that's not all.
 
-Chronos Manager brings HatchZip's revolutionary low-storage extraction technology to Android, allowing you to extract massive game archives without needing enough storage for both the original ZIP and the extracted files simultaneously.
+Cronos Manager brings HatchZip's revolutionary low-storage extraction technology to Android, allowing you to extract massive game archives without needing enough storage for both the original ZIP and the extracted files simultaneously.
 
-Whether you're managing everyday files, organizing folders, working with archives or handling massive PC game downloads, Chronos Manager has you covered.
+Whether you're managing everyday files, organizing folders, working with archives or handling massive PC game downloads, Cronos Manager has you covered.
 
 Everything you need to manage your files
 
@@ -49,7 +49,7 @@ Chronos Manager uses the low-storage extraction engine inherited from HatchZip t
 
 How does it work?
 
-1. Storage analysis: Chronos Manager analyses the archive and calculates the required free space before extraction begins.
+1. Storage analysis: Cronos Manager analyses the archive and calculates the required free space before extraction begins.
 2. Reverse extraction: The archive is processed from the end, extracting sections one at a time.
 3. In-place archive trimming: Successfully extracted sections are removed from the original archive, freeing up storage for subsequent sections.
 4. Continuous extraction: This process repeats until all files have been extracted.
@@ -67,7 +67,7 @@ Requirements depend on archive structure and compression. Chronos Manager analys
 
 Built for everyday use
 
-Chronos Manager brings essential file management and advanced archive functionality together in one application.
+Cronos Manager brings essential file management and advanced archive functionality together in one application.
 
 No need to jump between multiple apps just to manage your files.
 
@@ -89,7 +89,7 @@ Important notes
 
 Building from source
 
-Chronos Manager is built using GitHub Actions.
+Cronos Manager is built using GitHub Actions.
 
 The Android application uses Kotlin and Gradle, while the native extraction engine is written in Rust and compiled for Android using the Android NDK.
 
