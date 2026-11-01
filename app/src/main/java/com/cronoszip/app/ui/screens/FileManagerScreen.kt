@@ -78,6 +78,7 @@ import com.cronoszip.app.data.BatchExtractor
 import com.cronoszip.app.data.BatchItem
 import com.cronoszip.app.data.BatchState
 import com.cronoszip.app.data.BatchStatus
+import com.cronoszip.app.data.Compressor
 import com.cronoszip.app.data.DocumentsProviderApps
 import com.cronoszip.app.data.FileClipboard
 import com.cronoszip.app.data.FileItem
@@ -170,6 +171,9 @@ fun FileManagerScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var confirmBatchDelete by remember { mutableStateOf(false) }
     var showBatch by remember { mutableStateOf(false) }
+    var showCompress by remember { mutableStateOf(false) }
+    var zipName by remember { mutableStateOf("Archive.zip") }
+    var compressing by remember { mutableStateOf(false) }
     val batch by BatchExtractor.state.collectAsState()
     val sel = remember { SelectionState() }
 
@@ -275,9 +279,11 @@ fun FileManagerScreen(
 
         if (sel.selecting) {
             val archiveCount = sel.selected.count { isLocalArchive(it) }
+            val zipCount = sel.selected.count { !SafStorage.isSaf(it) }
             SelectionBar(
                 count = sel.selected.size,
                 archiveCount = archiveCount,
+                zipCount = zipCount,
                 onCopy = {
                     if (sel.selected.isEmpty()) {
                         message = "Tap items to select them first."
@@ -315,6 +321,17 @@ fun FileManagerScreen(
                         sel.selecting = false
                         sel.selected.clear()
                         showBatch = true
+                    }
+                },
+                onZip = {
+                    if (sel.selected.isEmpty()) {
+                        message = "Tap items to select them first."
+                    } else if (zipCount == 0) {
+                        message = "Only files on phone storage can be zipped."
+                    } else if (SafStorage.isSaf(pathA)) {
+                        message = "Open a folder on phone storage (Internal, Downloads…) in the left pane to save the zip."
+                    } else {
+                        showCompress = true
                     }
                 },
                 onClear = {
@@ -393,6 +410,43 @@ fun FileManagerScreen(
         )
     }
 
+    if (showCompress) {
+        CompressDialog(
+            count = sel.selected.count { !SafStorage.isSaf(it) },
+            busy = compressing,
+            name = zipName,
+            onName = { zipName = it },
+            onCancel = { showCompress = false },
+            onCompress = {
+                val inputs = sel.selected.filter { !SafStorage.isSaf(it) }
+                val typed = zipName.trim()
+                val clean = if (typed.endsWith(".zip", ignoreCase = true)) typed else "$typed.zip"
+                if (typed.isBlank() || typed.contains('/') || typed.contains('\\')) {
+                    message = "Use a plain name for the zip file."
+                } else if (inputs.isEmpty()) {
+                    message = "Nothing to zip. Select files on phone storage."
+                } else {
+                    val output = File(pathA, clean).absolutePath
+                    compressing = true
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            Compressor.compress(output, inputs, store = false)
+                        }
+                        compressing = false
+                        showCompress = false
+                        sel.selecting = false
+                        sel.selected.clear()
+                        message = result.fold(
+                            onSuccess = { "Created $clean with ${it.entries} entries (${formatBytes(it.bytes)})." },
+                            onFailure = { it.message ?: "Compression failed." },
+                        )
+                        refresh++
+                    }
+                }
+            },
+        )
+    }
+
     if (confirmBatchDelete) {
         Dialog(onDismissRequest = { confirmBatchDelete = false }) {
             SolidDialogCard(glow = Warning) {
@@ -436,6 +490,50 @@ fun FileManagerScreen(
                         },
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompressDialog(
+    count: Int,
+    busy: Boolean,
+    name: String,
+    onName: (String) -> Unit,
+    onCancel: () -> Unit,
+    onCompress: () -> Unit,
+) {
+    Dialog(onDismissRequest = { if (!busy) onCancel() }) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("Compress to ZIP", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "$count item(s) will be zipped into the left pane's folder. Folders include everything inside them.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = name,
+                onValueChange = onName,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Archive name", color = TextSecondary) },
+                singleLine = true,
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SecondaryButton(
+                    text = "Cancel",
+                    modifier = Modifier.weight(1f),
+                    onClick = onCancel,
+                )
+                PrimaryButton(
+                    text = if (busy) "Working…" else "Compress",
+                    modifier = Modifier.weight(1f),
+                    enabled = !busy && name.isNotBlank() && count > 0,
+                    onClick = onCompress,
+                )
             }
         }
     }
@@ -573,10 +671,12 @@ private fun SplitPanes(
 private fun SelectionBar(
     count: Int,
     archiveCount: Int,
+    zipCount: Int,
     onCopy: () -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit,
     onExtract: () -> Unit,
+    onZip: () -> Unit,
     onClear: () -> Unit,
 ) {
     LazyRow(
@@ -587,6 +687,7 @@ private fun SelectionBar(
         item { GlassChip(text = "Move $count", onClick = onMove) }
         item { GlassChip(text = "Delete $count", onClick = onDelete) }
         item { GlassChip(text = "Extract $archiveCount", selected = archiveCount > 0, onClick = onExtract) }
+        item { GlassChip(text = "Zip $zipCount", selected = zipCount > 0, onClick = onZip) }
         item { GlassChip(text = "Clear", onClick = onClear) }
     }
 }
