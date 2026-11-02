@@ -17,8 +17,11 @@ data class TransferProgress(
 
 enum class TransferKind { Copy, Move, Delete }
 
+/** What to do when the destination already has an item with the same name. */
+enum class ConflictPolicy { Merge, Replace, Skip, KeepBoth }
+
 /**
- * Copy, move and delete for real file paths, with byte progress and cancel.
+ * Copy, move and delete for real file paths, with byte progress, cancel and conflict handling.
  * Moves try a fast rename first, so moving inside one storage volume is instant.
  */
 object FileTransfer {
@@ -34,11 +37,23 @@ object FileTransfer {
         var items = 0
     }
 
-    /** Runs [kind] on [paths]. [destDir] is needed for Copy and Move. Returns how many items finished. */
+    /** Names of the items in [paths] that already exist inside [destDir]. */
+    fun conflicts(paths: List<String>, destDir: File): List<String> =
+        paths.map { File(it).name }.filter { File(destDir, it).exists() }
+
+    /** Same as the full version, keeping both copies when names clash. */
     fun run(
         kind: TransferKind,
         paths: List<String>,
         destDir: File?,
+        onProgress: (TransferProgress) -> Unit,
+    ): Result<Int> = run(kind, paths, destDir, ConflictPolicy.KeepBoth, onProgress)
+
+    fun run(
+        kind: TransferKind,
+        paths: List<String>,
+        destDir: File?,
+        policy: ConflictPolicy,
         onProgress: (TransferProgress) -> Unit,
     ): Result<Int> = runCatching {
         cancelled = false
@@ -77,22 +92,46 @@ object FileTransfer {
         sources.forEach { src ->
             checkCancel()
             when (kind) {
-                TransferKind.Copy -> copyTree(src, uniqueTarget(dest!!, src.name), tally) { report(src.name) }
-                TransferKind.Move -> {
-                    val target = uniqueTarget(dest!!, src.name)
-                    if (src.renameTo(target)) {
-                        tally.bytes += sizeOf(target)
-                    } else {
-                        copyTree(src, target, tally) { report(src.name) }
-                        deleteTree(src, countBytes = false, tally = tally) { report(src.name) }
-                    }
-                }
+                TransferKind.Copy -> place(src, dest!!, policy, move = false, tally = tally) { report(src.name) }
+                TransferKind.Move -> place(src, dest!!, policy, move = true, tally = tally) { report(src.name) }
                 TransferKind.Delete -> deleteTree(src, countBytes = true, tally = tally) { report(src.name) }
             }
             tally.items++
             report(src.name, force = true)
         }
         tally.items
+    }
+
+    /** Puts [src] inside [dest] according to the conflict [policy]. */
+    private fun place(
+        src: File,
+        dest: File,
+        policy: ConflictPolicy,
+        move: Boolean,
+        tally: Tally,
+        step: () -> Unit,
+    ) {
+        val existing = File(dest, src.name)
+        val target: File
+        if (!existing.exists()) {
+            target = existing
+        } else {
+            when (policy) {
+                ConflictPolicy.Skip -> return
+                ConflictPolicy.Replace -> {
+                    deleteTree(existing, countBytes = false, tally = tally, step = step)
+                    target = existing
+                }
+                ConflictPolicy.Merge -> target = existing
+                ConflictPolicy.KeepBoth -> target = uniqueTarget(dest, src.name)
+            }
+        }
+        if (move && !target.exists() && src.renameTo(target)) {
+            tally.bytes += sizeOf(target)
+            return
+        }
+        copyTree(src, target, tally, step)
+        if (move) deleteTree(src, countBytes = false, tally = tally, step = step)
     }
 
     private fun checkCancel() {
