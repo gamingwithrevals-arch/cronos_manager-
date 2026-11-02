@@ -1,6 +1,7 @@
 package com.cronoszip.app.ui
 
 import android.net.Uri
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -37,6 +39,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.cronoszip.app.data.AppPrefs
 import com.cronoszip.app.data.BrowserMode
 import com.cronoszip.app.data.CheckData
 import com.cronoszip.app.data.UiEffect
@@ -124,7 +127,12 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        LiquidBackground(animate = viewModel.settings.animations)
+        // AMOLED mode swaps the blue animated background for solid black. Everything else keeps its look.
+        if (AppPrefs.amoled) {
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+        } else {
+            LiquidBackground(animate = viewModel.settings.animations)
+        }
 
         NavHost(
             navController = nav,
