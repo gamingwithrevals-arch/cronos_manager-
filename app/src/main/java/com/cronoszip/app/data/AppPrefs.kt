@@ -1,7 +1,9 @@
 package com.cronoszip.app.data
 
 import android.content.Context
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 /** App-wide display settings. The AMOLED switch lives here so every screen can read it. */
 object AppPrefs {
