@@ -45,12 +45,14 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -84,24 +86,27 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.cronoszip.app.data.AppPrefs
 import com.cronoszip.app.data.BatchExtractor
 import com.cronoszip.app.data.BatchItem
 import com.cronoszip.app.data.BatchState
 import com.cronoszip.app.data.BatchStatus
 import com.cronoszip.app.data.Compressor
 import com.cronoszip.app.data.DocumentsProviderApps
-import com.cronoszip.app.data.FileClipboard
 import com.cronoszip.app.data.FileDetails
 import com.cronoszip.app.data.FileItem
 import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.FileOperations
+import com.cronoszip.app.data.FileSearch
 import com.cronoszip.app.data.FileTools
+import com.cronoszip.app.data.FileTransfer
 import com.cronoszip.app.data.ListOptions
-import com.cronoszip.app.data.MixedFileOps
 import com.cronoszip.app.data.PinnedLocation
 import com.cronoszip.app.data.PinnedStorage
 import com.cronoszip.app.data.SafStorage
 import com.cronoszip.app.data.SortMode
+import com.cronoszip.app.data.TransferKind
+import com.cronoszip.app.data.TransferProgress
 import com.cronoszip.app.ui.components.BackCircle
 import com.cronoszip.app.ui.components.GlassCard
 import com.cronoszip.app.ui.components.GlassChip
@@ -139,6 +144,8 @@ private class SelectionState {
     var selecting by mutableStateOf(false)
     val selected = mutableStateListOf<String>()
     var batch by mutableStateOf<BatchClip?>(null)
+    var progress by mutableStateOf<TransferProgress?>(null)
+    var tick by mutableStateOf(0)
 }
 
 /** Items waiting to be pasted: copied (cut = false) or moved (cut = true). */
@@ -146,14 +153,6 @@ private data class BatchClip(val paths: List<String>, val cut: Boolean)
 
 private fun toggleSelect(sel: SelectionState, path: String) {
     if (path in sel.selected) sel.selected.remove(path) else sel.selected.add(path)
-}
-
-private fun startBatch(sel: SelectionState, cut: Boolean): Int {
-    val paths = sel.selected.toList()
-    sel.batch = BatchClip(paths, cut)
-    sel.selecting = false
-    sel.selected.clear()
-    return paths.size
 }
 
 private fun isLocalArchive(path: String): Boolean =
@@ -175,12 +174,13 @@ private fun unreadableMessage(path: String): String =
         "This folder can't be read."
     }
 
-/** A soft, rounded surface used for every panel, so the whole screen looks consistent. */
+/** A soft, rounded surface used for every panel. The AMOLED theme makes it pure black. */
 private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
     .clip(RoundedCornerShape(radius))
-    .background(GlassWhite.copy(alpha = 0.05f))
+    .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.05f))
     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
-    @Composable
+    /** Items picked in the screen header and bars need the same look, so this is one place for them. */
+@Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
     onBack: (() -> Unit)?,
@@ -205,6 +205,8 @@ fun FileManagerScreen(
     var showStorage by remember { mutableStateOf(false) }
     var showBatch by remember { mutableStateOf(false) }
     var showCompress by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var showGoTo by remember { mutableStateOf(false) }
     var zipName by remember { mutableStateOf("Archive.zip") }
     var compressing by remember { mutableStateOf(false) }
     var confirmBatchDelete by remember { mutableStateOf(false) }
@@ -219,6 +221,8 @@ fun FileManagerScreen(
     fun setActivePath(path: String) {
         if (split && activePane == 1) pathB = path else pathA = path
     }
+
+    LaunchedEffect(AppPrefs.amoled) { refresh++ }
 
     LaunchedEffect(roots) {
         if (pathA.isBlank() || !underAnyRoot(pathA, roots)) {
@@ -310,6 +314,11 @@ fun FileManagerScreen(
             Spacer(Modifier.height(10.dp))
         }
 
+        sel.progress?.let { p ->
+            TransferBar(p = p, onCancel = { FileTransfer.cancel() })
+            Spacer(Modifier.height(10.dp))
+        }
+
         message?.let {
             Text(
                 text = it,
@@ -385,20 +394,29 @@ fun FileManagerScreen(
                 count = sel.selected.size,
                 archiveCount = sel.selected.count { isLocalArchive(it) },
                 zipCount = sel.selected.count { !SafStorage.isSaf(it) },
+                onSelectAll = {
+                    val visible = listAllVisible(roots, pathA, pathB, split, activePane, opts)
+                    visible.forEach { if (it !in sel.selected) sel.selected.add(it) }
+                    message = "Selected ${sel.selected.size} item(s)."
+                },
                 onCopy = {
                     if (sel.selected.isEmpty()) {
                         message = "Tap items to select them first."
                     } else {
-                        val n = startBatch(sel, cut = false)
-                        message = "Copied $n item(s). Open a folder and tap Paste."
+                        sel.batch = BatchClip(sel.selected.toList(), cut = false)
+                        sel.selecting = false
+                        sel.selected.clear()
+                        message = "Copied ${sel.batch?.paths?.size ?: 0} item(s). Open a folder and tap Paste here."
                     }
                 },
                 onMove = {
                     if (sel.selected.isEmpty()) {
                         message = "Tap items to select them first."
                     } else {
-                        val n = startBatch(sel, cut = true)
-                        message = "Cut $n item(s). Open a folder and tap Paste."
+                        sel.batch = BatchClip(sel.selected.toList(), cut = true)
+                        sel.selecting = false
+                        sel.selected.clear()
+                        message = "Cut ${sel.batch?.paths?.size ?: 0} item(s). Open a folder and tap Move here."
                     }
                 },
                 onDelete = {
@@ -443,9 +461,8 @@ fun FileManagerScreen(
             )
         }
         Spacer(Modifier.height(12.dp))
-    }
-
-    if (showOptions) {
+        }
+            if (showOptions) {
         OptionsDialog(
             showHidden = showHidden,
             onHidden = { showHidden = it },
@@ -453,6 +470,8 @@ fun FileManagerScreen(
             onSort = { sortMode = it },
             descending = descending,
             onDescending = { descending = it },
+            amoled = AppPrefs.amoled,
+            onAmoled = { AppPrefs.setAmoled(context, it) },
             onSettings = {
                 showOptions = false
                 onSettings()
@@ -483,6 +502,33 @@ fun FileManagerScreen(
         )
     }
 
+    if (showSearch) {
+        SearchDialog(
+            root = activePath,
+            onPick = { item ->
+                showSearch = false
+                setActivePath(if (item.directory) item.path else File(item.path).parent.orEmpty())
+            },
+            onDismiss = { showSearch = false },
+        )
+    }
+
+    if (showGoTo) {
+        GoToDialog(
+            current = activePath,
+            onGo = { typed ->
+                val dir = File(typed.trim())
+                if (dir.isDirectory) {
+                    setActivePath(dir.absolutePath)
+                    showGoTo = false
+                } else {
+                    message = "That folder does not exist."
+                }
+            },
+            onDismiss = { showGoTo = false },
+        )
+    }
+
     if (showCompress) {
         CompressDialog(
             count = sel.selected.count { !SafStorage.isSaf(it) },
@@ -490,7 +536,7 @@ fun FileManagerScreen(
             name = zipName,
             onName = { zipName = it },
             onCancel = { showCompress = false },
-            onCompress = {
+            onCompress = { store ->
                 val inputs = sel.selected.filter { !SafStorage.isSaf(it) }
                 val typed = zipName.trim()
                 val clean = if (typed.endsWith(".zip", ignoreCase = true)) typed else "$typed.zip"
@@ -503,7 +549,7 @@ fun FileManagerScreen(
                     compressing = true
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
-                            Compressor.compress(output, inputs, store = false)
+                            Compressor.compress(output, inputs, store = store)
                         }
                         compressing = false
                         showCompress = false
@@ -546,18 +592,19 @@ fun FileManagerScreen(
                             sel.selecting = false
                             sel.selected.clear()
                             scope.launch {
-                                val results = withContext(Dispatchers.IO) {
-                                    paths.map { p ->
-                                        if (SafStorage.isSaf(p)) SafStorage.delete(context, Uri.parse(p))
-                                        else FileOperations.delete(File(p))
+                                sel.progress = TransferProgress("Deleting", "", 0L, 0L, 0, paths.size)
+                                val result = withContext(Dispatchers.IO) {
+                                    FileTransfer.run(TransferKind.Delete, paths, null) { p ->
+                                        scope.launch { sel.progress = p }
                                     }
                                 }
-                                val failed = results.count { it.isFailure }
-                                message = if (failed == 0) {
-                                    "Deleted ${paths.size} item(s)."
-                                } else {
-                                    "Deleted ${paths.size - failed}. $failed failed."
-                                }
+                                sel.progress = null
+                                message = result.fold(
+                                    onSuccess = { "Deleted $it item(s)." },
+                                    onFailure = {
+                                        if (it is InterruptedException) "Delete cancelled." else (it.message ?: "Delete failed.")
+                                    },
+                                )
                                 refresh++
                             }
                         },
@@ -717,7 +764,6 @@ private fun BatchPill(batch: BatchState, onClick: () -> Unit) {
         )
     }
 }
-
 @Composable
 private fun PermissionCard(onAllow: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
@@ -755,11 +801,77 @@ private fun PermissionCard(onAllow: () -> Unit) {
     }
 }
 
+/** The progress box shown while files are copied, moved or deleted. It can be cancelled. */
+@Composable
+private fun TransferBar(p: TransferProgress, onCancel: () -> Unit) {
+    val fraction = when {
+        p.totalBytes > 0L -> (p.doneBytes.toFloat() / p.totalBytes.toFloat()).coerceIn(0f, 1f)
+        p.totalItems > 0 -> (p.doneItems.toFloat() / p.totalItems.toFloat()).coerceIn(0f, 1f)
+        else -> 0f
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassSurface(20.dp)
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "${p.title}… ${p.doneItems} of ${p.totalItems}",
+                style = MaterialTheme.typography.titleSmall,
+                color = TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "${(fraction * 100).toInt()}%",
+                style = MaterialTheme.typography.labelLarge,
+                color = CronosCyan,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        LinearProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.fillMaxWidth(),
+            color = CronosCyan,
+            trackColor = Color.White.copy(alpha = 0.08f),
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = if (p.totalBytes > 0L) {
+                "${formatBytes(p.doneBytes)} of ${formatBytes(p.totalBytes)} · ${p.current}"
+            } else {
+                p.current
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
+        SecondaryButton(text = "Cancel", modifier = Modifier.fillMaxWidth(), onClick = onCancel)
+    }
+}
+
+/** Every item in the active folder, used by Select all. Phone storage only. */
+private fun listAllVisible(
+    roots: List<Pair<String, String>>,
+    pathA: String,
+    pathB: String,
+    split: Boolean,
+    activePane: Int,
+    opts: ListOptions,
+): List<String> {
+    val path = if (split && activePane == 1) pathB else pathA
+    if (path.isBlank() || SafStorage.isSaf(path)) return emptyList()
+    return FileListing.listLocal(path, opts).orEmpty().map { it.path }
+}
+
 @Composable
 private fun SelectionDock(
     count: Int,
     archiveCount: Int,
     zipCount: Int,
+    onSelectAll: () -> Unit,
     onCopy: () -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit,
@@ -789,7 +901,8 @@ private fun SelectionDock(
         }
         Spacer(Modifier.height(10.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { GlassChip(text = "Copy", selected = true, onClick = onCopy) }
+            item { GlassChip(text = "Select all", onClick = onSelectAll) }
+            item { GlassChip(text = "Copy", selected = count > 0, onClick = onCopy) }
             item { GlassChip(text = "Move", onClick = onMove) }
             item { GlassChip(text = "Zip", selected = zipCount > 0, onClick = onZip) }
             item { GlassChip(text = "Extract", selected = archiveCount > 0, onClick = onExtract) }
@@ -797,7 +910,6 @@ private fun SelectionDock(
         }
     }
 }
-
 @Composable
 private fun OptionsDialog(
     showHidden: Boolean,
@@ -806,6 +918,8 @@ private fun OptionsDialog(
     onSort: (SortMode) -> Unit,
     descending: Boolean,
     onDescending: (Boolean) -> Unit,
+    amoled: Boolean,
+    onAmoled: (Boolean) -> Unit,
     onSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -817,6 +931,7 @@ private fun OptionsDialog(
 
             SectionTitle("Show")
             SwitchRow(label = "Hidden files", checked = showHidden, onChange = onHidden)
+            SwitchRow(label = "AMOLED dark theme", checked = amoled, onChange = onAmoled)
 
             Spacer(Modifier.height(14.dp))
             SectionTitle("Sort by")
@@ -853,6 +968,135 @@ private fun OptionsDialog(
     }
 }
 
+@Composable
+private fun SearchDialog(
+    root: String,
+    onPick: (FileItem) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<FileItem>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    var searched by remember { mutableStateOf(false) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("Search", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Searches this folder and all subfolders.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Name contains…", color = TextSecondary) },
+                singleLine = true,
+            )
+            Spacer(Modifier.height(10.dp))
+            PrimaryButton(
+                text = if (searching) "Searching…" else "Search",
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !searching && query.isNotBlank(),
+                onClick = {
+                    searching = true
+                    scope.launch {
+                        results = withContext(Dispatchers.IO) { FileSearch.find(root, query) }
+                        searching = false
+                        searched = true
+                    }
+                },
+            )
+            Spacer(Modifier.height(10.dp))
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                if (searched && results.isEmpty()) {
+                    Text("No matches.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                }
+                results.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(item) }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = if (item.directory) Icons.Rounded.Folder else Icons.Rounded.Description,
+                            contentDescription = null,
+                            tint = if (item.directory) CronosCyan else Color(0xFF9CC7FF),
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = File(item.path).parent.orEmpty(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            SecondaryButton(text = "Close", modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
+        }
+    }
+}
+
+@Composable
+private fun GoToDialog(
+    current: String,
+    onGo: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var typed by remember { mutableStateOf(current) }
+    Dialog(onDismissRequest = onDismiss) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("Go to path", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Type a full folder path, for example /storage/emulated/0/Download",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = typed,
+                onValueChange = { typed = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Folder path", color = TextSecondary) },
+                singleLine = true,
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SecondaryButton(text = "Cancel", modifier = Modifier.weight(1f), onClick = onDismiss)
+                PrimaryButton(
+                    text = "Go",
+                    modifier = Modifier.weight(1f),
+                    enabled = typed.isNotBlank(),
+                    onClick = { onGo(typed) },
+                )
+            }
+        }
+    }
+}
 @Composable
 private fun SectionTitle(text: String) {
     Text(
@@ -931,6 +1175,7 @@ private fun LinkRow(label: String, onClick: () -> Unit) {
         )
     }
 }
+
 /** The folder above [path], or null when there is none (the top of the storage). */
 private fun upPathOf(path: String): String? {
     if (path.isBlank()) return null
@@ -941,7 +1186,6 @@ private fun upPathOf(path: String): String? {
     }
     return parent?.takeIf { it != path }
 }
-
 /**
  * What tapping an entry does. Folders navigate, archives go to the extraction flow, APKs and
  * other files open in the matching Android app, and SAF documents open through the provider.
@@ -992,7 +1236,6 @@ private fun openEntry(
     FileOpener.open(context, item.path)
         .onFailure { onMessage(it.message ?: "This file could not be opened.") }
 }
-
 @Composable
 private fun FolderView(
     path: String,
@@ -1039,14 +1282,27 @@ private fun FolderView(
     fun pasteHere() {
         val batch = sel.batch ?: return
         val here = path
+        if (SafStorage.isSaf(here)) {
+            status = "Paste works in phone storage folders only."
+            return
+        }
         scope.launch {
-            val results = withContext(Dispatchers.IO) {
-                batch.paths.map { MixedFileOps.paste(context, here, it, batch.cut) }
+            val kind = if (batch.cut) TransferKind.Move else TransferKind.Copy
+            sel.progress = TransferProgress(if (batch.cut) "Moving" else "Copying", "", 0L, 0L, 0, batch.paths.size)
+            val result = withContext(Dispatchers.IO) {
+                FileTransfer.run(kind, batch.paths, File(here)) { p ->
+                    scope.launch { sel.progress = p }
+                }
             }
-            val ok = results.count { it.isSuccess }
-            val failed = results.firstOrNull { it.isFailure }?.exceptionOrNull()?.message
-            if (batch.cut && failed == null) sel.batch = null
-            status = if (failed == null) "Pasted $ok item(s)." else "Pasted $ok. Failed: $failed"
+            sel.progress = null
+            result
+                .onSuccess {
+                    if (batch.cut) sel.batch = null
+                    status = "Pasted $it item(s)."
+                }
+                .onFailure {
+                    status = if (it is InterruptedException) "Cancelled." else (it.message ?: "Paste failed.")
+                }
             onChanged()
         }
     }
@@ -1347,16 +1603,27 @@ private fun FolderView(
                             val target = item
                             deleteItem = null
                             scope.launch {
-                                val result = withContext(Dispatchers.IO) {
-                                    if (SafStorage.isSaf(target.path)) {
+                                if (SafStorage.isSaf(target.path)) {
+                                    val result = withContext(Dispatchers.IO) {
                                         SafStorage.delete(context, Uri.parse(target.path))
-                                    } else {
-                                        FileOperations.delete(File(target.path))
                                     }
+                                    result
+                                        .onSuccess { status = "Deleted ${target.name}" }
+                                        .onFailure { status = it.message }
+                                } else {
+                                    sel.progress = TransferProgress("Deleting", target.name, 0L, 0L, 0, 1)
+                                    val result = withContext(Dispatchers.IO) {
+                                        FileTransfer.run(TransferKind.Delete, listOf(target.path), null) { p ->
+                                            scope.launch { sel.progress = p }
+                                        }
+                                    }
+                                    sel.progress = null
+                                    result
+                                        .onSuccess { status = "Deleted ${target.name}" }
+                                        .onFailure {
+                                            status = if (it is InterruptedException) "Delete cancelled." else it.message
+                                        }
                                 }
-                                result
-                                    .onSuccess { status = "Deleted ${target.name}" }
-                                    .onFailure { status = it.message }
                                 onChanged()
                             }
                         },
@@ -1506,7 +1773,6 @@ private fun EntryRow(
         }
     }
 }
-
 @Composable
 private fun InfoDialog(item: FileItem, onDismiss: () -> Unit) {
     val details by produceState<FileDetails?>(initialValue = null, item.path) {
@@ -1649,50 +1915,6 @@ private fun NewFileDialog(
 }
 
 @Composable
-private fun CompressDialog(
-    count: Int,
-    busy: Boolean,
-    name: String,
-    onName: (String) -> Unit,
-    onCancel: () -> Unit,
-    onCompress: () -> Unit,
-) {
-    Dialog(onDismissRequest = { if (!busy) onCancel() }) {
-        SolidDialogCard(glow = CronosCyan) {
-            Text("Compress to ZIP", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "$count item(s) will be zipped into the active folder. Folders include everything inside them.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = name,
-                onValueChange = onName,
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Archive name", color = TextSecondary) },
-                singleLine = true,
-            )
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SecondaryButton(
-                    text = "Cancel",
-                    modifier = Modifier.weight(1f),
-                    onClick = onCancel,
-                )
-                PrimaryButton(
-                    text = if (busy) "Working…" else "Compress",
-                    modifier = Modifier.weight(1f),
-                    enabled = !busy && name.isNotBlank() && count > 0,
-                    onClick = onCompress,
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun BatchDialog(
     batch: BatchState,
     onStop: () -> Unit,
@@ -1734,7 +1956,6 @@ private fun BatchDialog(
         }
     }
 }
-
 @Composable
 private fun BatchRow(item: BatchItem) {
     val color = when (item.status) {
