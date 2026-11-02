@@ -88,10 +88,13 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
     var password by remember { mutableStateOf("") }
     var noSpaceCheck by remember { mutableStateOf<CheckData?>(null) }
 
+    // The archive screen runs its own check and extraction, so those must not jump to the old screens.
+    val onArchiveScreen = { nav.currentBackStackEntry?.destination?.route?.startsWith("archive/") == true }
+
     LaunchedEffect(viewModel) {
         viewModel.effects.collect { effect ->
             when (effect) {
-                is UiEffect.OpenSetup -> {
+                is UiEffect.OpenSetup -> if (!onArchiveScreen()) {
                     nav.navigate(Routes.Setup) { launchSingleTop = true }
                 }
                 is UiEffect.NoSpace -> {
@@ -105,7 +108,7 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                 is UiEffect.Message -> {
                     scope.launch { snackbar.showSnackbar(effect.text) }
                 }
-                is UiEffect.ExtractionStarted -> {
+                is UiEffect.ExtractionStarted -> if (!onArchiveScreen()) {
                     nav.navigate(Routes.Extract) { launchSingleTop = true }
                 }
                 is UiEffect.RestoreCompleted -> {
@@ -142,11 +145,17 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                 route = Routes.ArchivePattern,
                 arguments = listOf(navArgument("path") { type = NavType.StringType }),
             ) { entry ->
-                val archivePath = entry.arguments?.getString("path").orEmpty()
                 ArchiveViewerScreen(
-                    path = archivePath,
+                    viewModel = viewModel,
+                    path = entry.arguments?.getString("path").orEmpty(),
                     onBack = { nav.popBackStack() },
-                    onExtract = { viewModel.checkArchive(archivePath) },
+                    onChooseFolder = { nav.navigate(Routes.browser(BrowserMode.Folder)) },
+                    onDone = {
+                        nav.navigate(Routes.Files) {
+                            popUpTo(Routes.Files) { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    },
                 )
             }
 
