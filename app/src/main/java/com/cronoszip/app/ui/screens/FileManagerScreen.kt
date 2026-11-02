@@ -45,7 +45,6 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Upload
@@ -92,6 +91,7 @@ import com.cronoszip.app.data.BatchItem
 import com.cronoszip.app.data.BatchState
 import com.cronoszip.app.data.BatchStatus
 import com.cronoszip.app.data.Compressor
+import com.cronoszip.app.data.ConflictPolicy
 import com.cronoszip.app.data.DocumentsProviderApps
 import com.cronoszip.app.data.FileDetails
 import com.cronoszip.app.data.FileItem
@@ -179,8 +179,7 @@ private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
     .clip(RoundedCornerShape(radius))
     .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.05f))
     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
-    /** Items picked in the screen header and bars need the same look, so this is one place for them. */
-@Composable
+    @Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
     onBack: (() -> Unit)?,
@@ -280,7 +279,8 @@ fun FileManagerScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-        Column(
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .safeDrawingPadding()
@@ -302,6 +302,15 @@ fun FileManagerScreen(
             onPick = { setActivePath(it) },
             onAdd = { showStorage = true },
         )
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            GlassChip(text = "Search", onClick = { showSearch = true })
+            GlassChip(text = "Go to path", onClick = { showGoTo = true })
+        }
         Spacer(Modifier.height(12.dp))
 
         if (granted) {
@@ -461,8 +470,8 @@ fun FileManagerScreen(
             )
         }
         Spacer(Modifier.height(12.dp))
-        }
-            if (showOptions) {
+    }
+        if (showOptions) {
         OptionsDialog(
             showHidden = showHidden,
             onHidden = { showHidden = it },
@@ -614,6 +623,7 @@ fun FileManagerScreen(
         }
     }
 }
+
 @Composable
 private fun TopBar(title: String, onBack: (() -> Unit)?, onMore: () -> Unit) {
     Row(
@@ -688,7 +698,6 @@ private fun ModeSegment(label: String, selected: Boolean, modifier: Modifier, on
         )
     }
 }
-
 @Composable
 private fun LocationStrip(
     roots: List<Pair<String, String>>,
@@ -764,6 +773,7 @@ private fun BatchPill(batch: BatchState, onClick: () -> Unit) {
         )
     }
 }
+
 @Composable
 private fun PermissionCard(onAllow: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
@@ -910,6 +920,7 @@ private fun SelectionDock(
         }
     }
 }
+
 @Composable
 private fun OptionsDialog(
     showHidden: Boolean,
@@ -960,14 +971,12 @@ private fun OptionsDialog(
                 modifier = Modifier.fillMaxWidth(),
                 onClick = { uriHandler.openUri("https://youtube.com/@aizenemu") },
             )
-            LinkRow(label = "Settings", onClick = onSettings)
 
             Spacer(Modifier.height(16.dp))
             SecondaryButton(text = "Done", modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
         }
     }
 }
-
 @Composable
 private fun SearchDialog(
     root: String,
@@ -1097,6 +1106,7 @@ private fun GoToDialog(
         }
     }
 }
+
 @Composable
 private fun SectionTitle(text: String) {
     Text(
@@ -1152,30 +1162,6 @@ private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun LinkRow(label: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = TextPrimary,
-            modifier = Modifier.weight(1f),
-        )
-        Icon(
-            imageVector = Icons.Rounded.ChevronRight,
-            contentDescription = null,
-            tint = TextSecondary,
-            modifier = Modifier.size(18.dp),
-        )
-    }
-}
-
 /** The folder above [path], or null when there is none (the top of the storage). */
 private fun upPathOf(path: String): String? {
     if (path.isBlank()) return null
@@ -1186,6 +1172,7 @@ private fun upPathOf(path: String): String? {
     }
     return parent?.takeIf { it != path }
 }
+
 /**
  * What tapping an entry does. Folders navigate, archives go to the extraction flow, APKs and
  * other files open in the matching Android app, and SAF documents open through the provider.
@@ -1263,6 +1250,7 @@ private fun FolderView(
     var showNewFolder by remember { mutableStateOf(false) }
     var showNewFile by remember { mutableStateOf(false) }
     var inputName by remember { mutableStateOf("") }
+    var conflictNames by remember { mutableStateOf<List<String>?>(null) }
     val upPath = upPathOf(path)
 
     LaunchedEffect(path, refreshToken, opts) {
@@ -1279,18 +1267,14 @@ private fun FolderView(
         }
     }
 
-    fun pasteHere() {
-        val batch = sel.batch ?: return
+    // Runs the paste with the chosen conflict policy. Move clears the batch once it succeeds.
+    fun runPaste(batch: BatchClip, policy: ConflictPolicy) {
         val here = path
-        if (SafStorage.isSaf(here)) {
-            status = "Paste works in phone storage folders only."
-            return
-        }
         scope.launch {
             val kind = if (batch.cut) TransferKind.Move else TransferKind.Copy
             sel.progress = TransferProgress(if (batch.cut) "Moving" else "Copying", "", 0L, 0L, 0, batch.paths.size)
             val result = withContext(Dispatchers.IO) {
-                FileTransfer.run(kind, batch.paths, File(here)) { p ->
+                FileTransfer.run(kind, batch.paths, File(here), policy) { p ->
                     scope.launch { sel.progress = p }
                 }
             }
@@ -1304,6 +1288,21 @@ private fun FolderView(
                     status = if (it is InterruptedException) "Cancelled." else (it.message ?: "Paste failed.")
                 }
             onChanged()
+        }
+    }
+
+    // Asks first when something with the same name is already in this folder.
+    fun pasteHere() {
+        val batch = sel.batch ?: return
+        if (SafStorage.isSaf(path)) {
+            status = "Paste works in phone storage folders only."
+            return
+        }
+        val names = FileTransfer.conflicts(batch.paths, File(path))
+        if (names.isNotEmpty()) {
+            conflictNames = names
+        } else {
+            runPaste(batch, ConflictPolicy.KeepBoth)
         }
     }
 
@@ -1466,8 +1465,7 @@ private fun FolderView(
             }
         }
     }
-
-    infoItem?.let { item ->
+        infoItem?.let { item ->
         InfoDialog(item = item, onDismiss = { infoItem = null })
     }
 
@@ -1632,6 +1630,19 @@ private fun FolderView(
             }
         }
     }
+
+    // Shown when a paste would overwrite or merge with items that already exist.
+    conflictNames?.let { names ->
+        ConflictDialog(
+            names = names,
+            onChoose = { policy ->
+                val b = sel.batch
+                conflictNames = null
+                if (b != null) runPaste(b, policy)
+            },
+            onCancel = { conflictNames = null },
+        )
+    }
 }
 
 @Composable
@@ -1773,6 +1784,7 @@ private fun EntryRow(
         }
     }
 }
+
 @Composable
 private fun InfoDialog(item: FileItem, onDismiss: () -> Unit) {
     val details by produceState<FileDetails?>(initialValue = null, item.path) {
@@ -1841,7 +1853,6 @@ private fun InfoRow(label: String, value: String) {
 }
 
 private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
-
 @Composable
 private fun NewFileDialog(
     dir: String,
@@ -1956,6 +1967,7 @@ private fun BatchDialog(
         }
     }
 }
+
 @Composable
 private fun BatchRow(item: BatchItem) {
     val color = when (item.status) {
@@ -2142,46 +2154,4 @@ fun managerRoots(
     context.filesDir?.let { list.add("App storage (internal)" to it.absolutePath) }
     context.cacheDir?.let { list.add("App cache" to it.absolutePath) }
     return list.distinctBy { it.second }
-}
-@Composable
-private fun CompressDialog(
-    count: Int,
-    busy: Boolean,
-    name: String,
-    onName: (String) -> Unit,
-    onCancel: () -> Unit,
-    onCompress: (Boolean) -> Unit,
-) {
-    var store by remember { mutableStateOf(false) }
-    Dialog(onDismissRequest = { if (!busy) onCancel() }) {
-        SolidDialogCard(glow = CronosCyan) {
-            Text("Compress to ZIP", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "$count item(s) will be zipped into the active folder. Folders include everything inside them.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = name,
-                onValueChange = onName,
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Archive name", color = TextSecondary) },
-                singleLine = true,
-            )
-            Spacer(Modifier.height(10.dp))
-            SwitchRow(label = "Store only (no compression, fastest)", checked = store, onChange = { store = it })
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SecondaryButton(text = "Cancel", modifier = Modifier.weight(1f), onClick = onCancel)
-                PrimaryButton(
-                    text = if (busy) "Working…" else "Compress",
-                    modifier = Modifier.weight(1f),
-                    enabled = !busy && name.isNotBlank() && count > 0,
-                    onClick = { onCompress(store) },
-                )
-            }
-        }
-    }
 }
