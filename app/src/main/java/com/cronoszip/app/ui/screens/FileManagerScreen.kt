@@ -1194,9 +1194,7 @@ fun FileManagerScreen(
             onDismissRequest = { showApps = false },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                InstalledAppsScreen(onClose = { showApps = false })
-            }
+            InstalledAppsScreen(onClose = { showApps = false })
         }
     }
 
@@ -1723,7 +1721,7 @@ private fun TextEditorDialog(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.92f))
+                .background(if (AppPrefs.amoled) Color.Black else Color(0xFF081222))
                 .safeDrawingPadding()
                 .padding(16.dp),
         ) {
@@ -2178,7 +2176,7 @@ private fun PermissionCard(onAllow: () -> Unit) {
             Text("Storage access is needed", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Chronos Manager needs access to read files and open archives.",
+                text = "Cronos Manager needs access to read files and open archives.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
             )
