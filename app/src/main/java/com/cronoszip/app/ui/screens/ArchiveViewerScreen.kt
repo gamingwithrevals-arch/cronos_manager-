@@ -44,6 +44,7 @@ import com.cronoszip.app.data.ArchiveConfig
 import com.cronoszip.app.data.ArchiveRepository
 import com.cronoszip.app.data.EngineException
 import com.cronoszip.app.data.ListData
+import com.cronoszip.app.service.etaText
 import com.cronoszip.app.ui.components.BackCircle
 import com.cronoszip.app.ui.components.PrimaryButton
 import com.cronoszip.app.ui.components.SecondaryButton
@@ -63,7 +64,7 @@ private fun archiveNameOf(path: String): String = path.substringAfterLast('/').i
 /**
  * One screen for an archive. It previews the contents and space plan first. Extract starts the
  * extraction on this same screen, the contents show what has been extracted, and each extracted
- * file leaves the list with an animation.
+ * file leaves the list with an animation. While running, the status line shows the time left.
  */
 @Composable
 fun ArchiveViewerScreen(
@@ -171,7 +172,7 @@ fun ArchiveViewerScreen(
                 ArchiveSectionLabel("Progress")
                 ArchiveProgressCard(
                     status = when {
-                        running -> "Extracting…"
+                        running -> "Extracting · ${etaText(extraction.done, extraction.total, extraction.speed)}"
                         paused -> "Paused"
                         finished -> "Extraction complete"
                         failure != null -> failure
