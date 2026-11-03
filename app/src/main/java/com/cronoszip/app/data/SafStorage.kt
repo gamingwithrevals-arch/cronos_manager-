@@ -21,29 +21,34 @@ object SafStorage {
         val documentId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
             ?: return null
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
-        val result = mutableListOf<FileItem>()
+
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        )
+
         return try {
-            resolver.query(
-                childrenUri,
-                arrayOf(
-                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                    DocumentsContract.Document.COLUMN_MIME_TYPE,
-                    DocumentsContract.Document.COLUMN_SIZE,
-                    DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-                ),
-                null,
-                null,
-                null,
-            )?.use { cursor ->
+            resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                val modifiedIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+
+                val result = ArrayList<FileItem>(cursor.count.coerceAtLeast(0))
                 while (cursor.moveToNext()) {
-                    val id = cursor.getString(0) ?: continue
-                    val name = cursor.getString(1) ?: continue
-                    if (name.startsWith(".")) continue
-                    val mime = cursor.getString(2).orEmpty()
+                    val id = if (idIndex >= 0) cursor.getString(idIndex) else null
+                    val name = if (nameIndex >= 0) cursor.getString(nameIndex) else null
+                    if (id.isNullOrBlank() || name.isNullOrBlank()) continue
+
+                    val mime = if (mimeIndex >= 0) cursor.getString(mimeIndex).orEmpty() else ""
                     val directory = mime == DocumentsContract.Document.MIME_TYPE_DIR
-                    val size = if (cursor.isNull(3)) 0L else cursor.getLong(3)
-                    val modified = if (cursor.isNull(4)) 0L else cursor.getLong(4)
+                    val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else 0L
+                    val modified = if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) cursor.getLong(modifiedIndex) else 0L
+
                     result.add(
                         FileItem(
                             name = name,
@@ -58,7 +63,7 @@ object SafStorage {
                 }
                 result.sortedWith(compareBy<FileItem>({ !it.directory }, { it.name.lowercase() }))
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
