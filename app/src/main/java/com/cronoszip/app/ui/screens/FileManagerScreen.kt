@@ -578,10 +578,10 @@ private fun Context.findActivity(): Activity? {
     return null
 }
 
-/** A soft, rounded surface used for every panel. The AMOLED theme makes it pure black. */
+/** Apple iOS-inspired refined frosted glass surface. */
 private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
     .clip(RoundedCornerShape(radius))
-    .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.05f))
+    .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.045f))
     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
 @Composable
 fun FileManagerScreen(
@@ -1179,10 +1179,6 @@ fun FileManagerScreen(
         OptionsDialog(
             showHidden = showHidden,
             onHidden = { showHidden = it },
-            sortMode = sortMode,
-            onSort = { sortMode = it },
-            descending = descending,
-            onDescending = { descending = it },
             amoled = AppPrefs.amoled,
             onAmoled = { AppPrefs.setAmoled(context, it) },
             onDismiss = { showOptions = false },
@@ -1690,7 +1686,7 @@ private fun PaneView(
     }
 }
 
-/** Built-in Text Viewer & Editor Dialog for .ini, .cfg, .conf, .txt, .json, .xml, and .log files. */
+/** Built-in Text Viewer & Editor Dialog with proper padding and weight so buttons are never cut off. */
 @Composable
 private fun TextEditorDialog(
     item: FileItem,
@@ -1718,94 +1714,104 @@ private fun TextEditorDialog(
         onDismissRequest = { if (!saving) onDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(if (AppPrefs.amoled) Color.Black else Color(0xFF081222))
+                .background(if (AppPrefs.amoled) Color.Black else Color(0xFF07101E))
                 .safeDrawingPadding()
                 .padding(16.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "TEXT & CONFIG EDITOR",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CronosCyan,
-                        letterSpacing = 1.2.sp,
-                    )
-                    Text(
-                        text = item.name,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                IconButton(onClick = { if (!saving) onDismiss() }) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextPrimary)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-
-            Box(
+            Column(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .glassSurface(18.dp)
-                    .padding(12.dp),
+                    .fillMaxSize()
+                    .glassSurface(24.dp)
+                    .padding(16.dp),
             ) {
-                when {
-                    loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
-                    }
-                    loadError != null -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(text = loadError.orEmpty(), color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
-                    }
-                    else -> BasicTextField(
-                        value = text,
-                        onValueChange = { text = it },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState()),
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "TEXT & CONFIG EDITOR",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CronosCyan,
+                            letterSpacing = 1.2.sp,
+                        )
+                        Text(
+                            text = item.name,
+                            style = MaterialTheme.typography.titleLarge,
                             color = TextPrimary,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp,
-                            lineHeight = 19.sp,
-                        ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(onClick = { if (!saving) onDismiss() }) {
+                        Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextPrimary)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(GlassWhite.copy(alpha = 0.04f))
+                        .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                        .padding(12.dp),
+                ) {
+                    when {
+                        loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
+                        }
+                        loadError != null -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(text = loadError.orEmpty(), color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        else -> BasicTextField(
+                            value = text,
+                            onValueChange = { text = it },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState()),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = TextPrimary,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp,
+                            ),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SecondaryButton(
+                        text = "Cancel",
+                        modifier = Modifier.weight(1f),
+                        onClick = { if (!saving) onDismiss() },
+                    )
+                    PrimaryButton(
+                        text = if (saving) "Saving…" else "Save changes",
+                        modifier = Modifier.weight(1f),
+                        enabled = !loading && !saving && loadError == null,
+                        onClick = {
+                            saving = true
+                            val updated = text
+                            scope.launch {
+                                val res = withContext(Dispatchers.IO) { writeTextItem(context, item, updated) }
+                                saving = false
+                                res.onSuccess {
+                                    onSaved()
+                                    onDismiss()
+                                }.onFailure { err ->
+                                    onError(err.message ?: "Could not save changes.")
+                                }
+                            }
+                        },
                     )
                 }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SecondaryButton(
-                    text = "Cancel",
-                    modifier = Modifier.weight(1f),
-                    onClick = { if (!saving) onDismiss() },
-                )
-                PrimaryButton(
-                    text = if (saving) "Saving…" else "Save changes",
-                    modifier = Modifier.weight(1f),
-                    enabled = !loading && !saving && loadError == null,
-                    onClick = {
-                        saving = true
-                        val updated = text
-                        scope.launch {
-                            val res = withContext(Dispatchers.IO) { writeTextItem(context, item, updated) }
-                            saving = false
-                            res.onSuccess {
-                                onSaved()
-                                onDismiss()
-                            }.onFailure { err ->
-                                onError(err.message ?: "Could not save changes.")
-                            }
-                        }
-                    },
-                )
             }
         }
     }
@@ -2340,10 +2346,6 @@ private fun SelectionDock(
 private fun OptionsDialog(
     showHidden: Boolean,
     onHidden: (Boolean) -> Unit,
-    sortMode: SortMode,
-    onSort: (SortMode) -> Unit,
-    descending: Boolean,
-    onDescending: (Boolean) -> Unit,
     amoled: Boolean,
     onAmoled: (Boolean) -> Unit,
     onDismiss: () -> Unit,
@@ -2357,13 +2359,6 @@ private fun OptionsDialog(
             SectionTitle("Show")
             SwitchRow(label = "Hidden files", checked = showHidden, onChange = onHidden)
             SwitchRow(label = "AMOLED dark theme", checked = amoled, onChange = onAmoled)
-
-            Spacer(Modifier.height(14.dp))
-            SectionTitle("Sort by")
-            SortMode.entries.forEach { mode ->
-                ChoiceRow(label = mode.label, selected = mode == sortMode, onClick = { onSort(mode) })
-            }
-            SwitchRow(label = "Descending", checked = descending, onChange = onDescending)
 
             Spacer(Modifier.height(14.dp))
             SectionTitle("About")
