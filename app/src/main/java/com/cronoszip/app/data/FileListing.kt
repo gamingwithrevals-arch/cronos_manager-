@@ -16,7 +16,7 @@ enum class SortMode(val label: String) {
     Type("Type"),
 }
 
-/** What the lists show and how they are ordered. Folders always come first. */
+/** What the lists show and how they are ordered. */
 data class ListOptions(
     val showHidden: Boolean = false,
     val sort: SortMode = SortMode.Name,
@@ -26,12 +26,9 @@ data class ListOptions(
 /**
  * One place that lists a folder, for local paths and storage-app providers alike. [list] is safe
  * to call from the UI: the work runs on Dispatchers.IO. Returns null when the folder cannot be read.
- *
- * A provider folder on device storage is listed through its real file path whenever that path can
- * be read. Items from a real path have no documentId; the screens use that to tell the two apart.
  */
 object FileListing {
-    /** The last provider error, kept so the screen can show what went wrong. Null when it worked. */
+    /** The last provider error, kept so the screen can show what went wrong. */
     @Volatile
     var lastError: String? = null
         private set
@@ -47,7 +44,11 @@ object FileListing {
                 listLocal(realPath, options)
             } else {
                 listProvider(context, uri)?.let { items ->
-                    sorted(items.filter { options.showHidden || !it.name.startsWith(".") }, options)
+                    FileSort.sort(
+                        items.filter { options.showHidden || !it.name.startsWith(".") },
+                        options.sort,
+                        options.descending,
+                    )
                 }
             }
         }
@@ -72,13 +73,9 @@ object FileListing {
                 )
             }
             .toList()
-        return sorted(items, options)
+        return FileSort.sort(items, options.sort, options.descending)
     }
 
-    /**
-     * Lists a provider folder. First tries the normal tree query; if that gives nothing, tries the
-     * plain children query, which some providers accept when the tree query is refused.
-     */
     private fun listProvider(context: Context, treeUri: Uri): List<FileItem>? {
         lastError = null
         SafStorage.list(context, treeUri)?.let { return it }
@@ -130,16 +127,5 @@ object FileListing {
             }
             items
         }
-    }
-
-    private fun sorted(items: List<FileItem>, options: ListOptions): List<FileItem> {
-        val comparator: Comparator<FileItem> = when (options.sort) {
-            SortMode.Name -> compareBy<FileItem> { it.name.lowercase() }
-            SortMode.Size -> compareBy<FileItem> { it.size }
-            SortMode.Date -> compareBy<FileItem> { it.modified }
-            SortMode.Type -> compareBy<FileItem> { it.name.substringAfterLast('.', "").lowercase() }
-        }
-        val ordered = if (options.descending) items.sortedWith(comparator.reversed()) else items.sortedWith(comparator)
-        return ordered.sortedBy { !it.directory }
     }
 }
