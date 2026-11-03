@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -77,6 +78,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -140,6 +142,18 @@ import kotlinx.coroutines.withContext
 /** Remembers which finished extraction the Files screen already jumped to. */
 private object ExtractionHint {
     var applied: String? = null
+}
+
+/** Extensions that open directly inside our built-in Text Viewer & Editor dialog. */
+private val TEXT_EDITOR_EXTENSIONS = setOf(
+    "ini", "cfg", "conf", "config", "txt", "log", "json", "xml",
+    "properties", "prop", "sh", "bat", "cmd", "md", "yaml", "yml",
+    "toml", "env", "csv", "reg", "desktop", "kt", "java", "py", "js", "html", "css"
+)
+
+private fun isTextEditable(name: String): Boolean {
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return ext in TEXT_EDITOR_EXTENSIONS || name.startsWith(".") && !name.substring(1).contains('.')
 }
 
 /** The file kinds shown by the file type chips. Each one is a flat list of files, with no folders. */
@@ -307,17 +321,20 @@ private fun pathTitle(context: Context, path: String): String {
     return mountLabelOf(context, tree)
 }
 
-/** Lists a phone folder. */
+/** Lists a phone folder and guarantees our FileSort order is applied. */
 private fun localResult(path: String, opts: ListOptions): Result<List<FileItem>> {
     val items = FileListing.listLocal(path, opts)
     return if (items != null) {
-        Result.success(items)
+        Result.success(FileSort.sort(items, opts.sort, opts.descending))
     } else {
         Result.failure(IllegalStateException(unreadableMessage(path)))
     }
 }
 
-/** Lists one folder of a mounted storage, through the tree that folder belongs to. */
+/**
+ * Lists one folder of a mounted storage.
+ * Note: Mounted app storages (emulators) always include dot-files so .wine/.config are visible!
+ */
 private fun mountResult(context: Context, docPath: String, opts: ListOptions): Result<List<FileItem>> = runCatching {
     val uri = Uri.parse(docPath)
     val tree = treeUriOf(uri) ?: throw IllegalStateException("This storage link is damaged. Remove it and add it again.")
@@ -400,12 +417,63 @@ private fun displayNameOf(context: Context, path: String): String =
         File(path).name
     }
 
+/** Reads text content from either a local phone file or a mounted SAF document URI (up to 512 KB). */
+private fun readTextItem(context: Context, item: FileItem): Result<String> = runCatching {
+    if (SafStorage.isSaf(item.path)) {
+        val uri = Uri.parse(item.path)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val bytes = input.readBytes()
+            if (bytes.size > 512 * 1024) {
+                String(bytes, 0, 512 * 1024, Charsets.UTF_8)
+            } else {
+                String(bytes, Charsets.UTF_8)
+            }
+        } ?: throw IllegalStateException("Could not open file stream.")
+    } else {
+        val file = File(item.path)
+        val bytes = file.readBytes()
+        if (bytes.size > 512 * 1024) {
+            String(bytes, 0, 512 * 1024, Charsets.UTF_8)
+        } else {
+            String(bytes, Charsets.UTF_8)
+        }
+    }
+}
+
+/** Writes edited text content back to either a local phone file or a mounted SAF document URI. */
+private fun writeTextItem(context: Context, item: FileItem, content: String): Result<Unit> = runCatching {
+    if (SafStorage.isSaf(item.path)) {
+        val uri = Uri.parse(item.path)
+        context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+        } ?: context.contentResolver.openOutputStream(uri)?.use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+        } ?: throw IllegalStateException("This storage provider does not allow writing to this file.")
+    } else {
+        File(item.path).writeText(content, Charsets.UTF_8)
+    }
+}
+
 /**
- * What tapping a file does. Archives go to the extraction screen; a mounted archive is copied to
- * the app cache first, because the engine reads files. Everything else opens in a matching app.
+ * What tapping a file does.
+ * - Text/Config files (.ini, .cfg, .conf, .txt, .json, .xml, .log, etc.) open in the built-in Text Editor!
+ * - Archives go to the extraction screen.
+ * - Everything else opens in a matching external app.
  */
-private fun openFile(context: Context, item: FileItem, onArchive: (String) -> Unit, onMessage: (String) -> Unit) {
+private fun openFile(
+    context: Context,
+    item: FileItem,
+    onArchive: (String) -> Unit,
+    onEditText: (FileItem) -> Unit,
+    onMessage: (String) -> Unit,
+) {
     if (item.directory) return
+    if (isTextEditable(item.name)) {
+        onEditText(item)
+        return
+    }
     if (SafStorage.isSaf(item.path)) {
         val uri = Uri.parse(item.path)
         if (isArchive(item.name)) {
@@ -419,14 +487,14 @@ private fun openFile(context: Context, item: FileItem, onArchive: (String) -> Un
             return
         }
         runCatching { context.startActivity(SafStorage.viewIntent(context, uri, null)) }
-            .onFailure { onMessage(it.message ?: "No app can open this file.") }
+            .onFailure { onEditText(item) }
         return
     }
     if (isArchive(item.name)) {
         onArchive(item.path)
         return
     }
-    FileOpener.open(context, item.path).onFailure { onMessage(it.message ?: "This file could not be opened.") }
+    FileOpener.open(context, item.path).onFailure { onEditText(item) }
 }
 
 /**
@@ -515,7 +583,6 @@ private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
     .clip(RoundedCornerShape(radius))
     .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.05f))
     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
-
 @Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
@@ -561,7 +628,7 @@ fun FileManagerScreen(
     var showHidden by remember { mutableStateOf(false) }
     var sortMode by remember { mutableStateOf(SortMode.Name) }
     var descending by remember { mutableStateOf(false) }
-    val opts = ListOptions(showHidden = showHidden, sort = sortMode, descending = descending)
+    var editingTextItem by remember { mutableStateOf<FileItem?>(null) }
 
     val activePane = if (split && activeIndex == 1) paneB else paneA
     val activeData = if (split && activeIndex == 1) dataB else dataA
@@ -573,6 +640,18 @@ fun FileManagerScreen(
         null
     }
     val upTarget: String? = if (activePane.category == null) upTargetOf(activePane) else null
+
+    // Automatically enable hidden files when browsing any mounted Storage App
+    val optsA = ListOptions(
+        showHidden = showHidden || SafStorage.isSaf(paneA.path),
+        sort = sortMode,
+        descending = descending,
+    )
+    val optsB = ListOptions(
+        showHidden = showHidden || SafStorage.isSaf(paneB.path),
+        sort = sortMode,
+        descending = descending,
+    )
 
     fun navigate(pane: PaneState, target: String) {
         pane.openFolder(target)
@@ -596,6 +675,7 @@ fun FileManagerScreen(
         activePane.history.clear()
         activePane.category = null
         activePane.path = SafTree.rootDocumentUri(uri).toString()
+        showHidden = true
         query = ""
         message = null
         sel.selected.clear()
@@ -754,8 +834,8 @@ fun FileManagerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(paneA.path, paneA.category, refresh, opts) { loadPane(context, paneA, dataA, opts) }
-    LaunchedEffect(paneB.path, paneB.category, refresh, opts) { loadPane(context, paneB, dataB, opts) }
+    LaunchedEffect(paneA.path, paneA.category, refresh, optsA) { loadPane(context, paneA, dataA, optsA) }
+    LaunchedEffect(paneB.path, paneB.category, refresh, optsB) { loadPane(context, paneB, dataB, optsB) }
     LaunchedEffect(paneA.path, paneA.category, paneB.path, paneB.category) { sel.selected.clear() }
     LaunchedEffect(batch.finished) {
         if (batch.finished) refresh++
@@ -785,7 +865,7 @@ fun FileManagerScreen(
         } else {
             searching = true
             FileScan.find(File(root)) { f -> f.name.contains(typed, ignoreCase = true) }
-                .collect { searchResults = it }
+                .collect { searchResults = FileSort.sort(it, sortMode, descending) }
             searching = false
         }
     }
@@ -871,8 +951,9 @@ fun FileManagerScreen(
 
         if (granted) {
             PathCard(
-                title = activePane.category?.let { "All ${it.label.lowercase()} · ${activeData.entries.size} file(s)" }
+                title = activePane.category?.let { "All ${it.label.lowercase()}" }
                     ?: pathTitle(context, activePane.path),
+                itemCount = activeData.entries.size,
                 storagePath = root,
             )
             Spacer(Modifier.height(6.dp))
@@ -922,6 +1003,13 @@ fun FileManagerScreen(
                         pane = paneA,
                         data = dataA,
                         sel = sel,
+                        sortMode = sortMode,
+                        descending = descending,
+                        onCycleSort = {
+                            val modes = SortMode.entries
+                            sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
+                        },
+                        onToggleDirection = { descending = !descending },
                         compact = true,
                         highlighted = activeIndex == 0,
                         hasUp = upA != null,
@@ -929,6 +1017,7 @@ fun FileManagerScreen(
                         onNavigate = { navigate(paneA, it) },
                         onUp = { up(paneA) },
                         onOpenArchive = onOpenArchive,
+                        onEditText = { editingTextItem = it },
                         onMessage = { message = it },
                         onChanged = { refresh++ },
                         onClipboard = { paths, cut -> setClipboard(paths, cut) },
@@ -939,6 +1028,13 @@ fun FileManagerScreen(
                         pane = paneB,
                         data = dataB,
                         sel = sel,
+                        sortMode = sortMode,
+                        descending = descending,
+                        onCycleSort = {
+                            val modes = SortMode.entries
+                            sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
+                        },
+                        onToggleDirection = { descending = !descending },
                         compact = true,
                         highlighted = activeIndex == 1,
                         hasUp = upB != null,
@@ -946,6 +1042,7 @@ fun FileManagerScreen(
                         onNavigate = { navigate(paneB, it) },
                         onUp = { up(paneB) },
                         onOpenArchive = onOpenArchive,
+                        onEditText = { editingTextItem = it },
                         onMessage = { message = it },
                         onChanged = { refresh++ },
                         onClipboard = { paths, cut -> setClipboard(paths, cut) },
@@ -957,6 +1054,13 @@ fun FileManagerScreen(
                     pane = paneA,
                     data = dataA,
                     sel = sel,
+                    sortMode = sortMode,
+                    descending = descending,
+                    onCycleSort = {
+                        val modes = SortMode.entries
+                        sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
+                    },
+                    onToggleDirection = { descending = !descending },
                     compact = false,
                     highlighted = false,
                     hasUp = upA != null,
@@ -964,6 +1068,7 @@ fun FileManagerScreen(
                     onNavigate = { navigate(paneA, it) },
                     onUp = { up(paneA) },
                     onOpenArchive = onOpenArchive,
+                    onEditText = { editingTextItem = it },
                     onMessage = { message = it },
                     onChanged = { refresh++ },
                     onClipboard = { paths, cut -> setClipboard(paths, cut) },
@@ -1056,6 +1161,18 @@ fun FileManagerScreen(
             )
         }
         Spacer(Modifier.height(12.dp))
+    }
+
+    editingTextItem?.let { target ->
+        TextEditorDialog(
+            item = target,
+            onSaved = {
+                message = "Saved ${target.name}."
+                refresh++
+            },
+            onError = { message = it },
+            onDismiss = { editingTextItem = null },
+        )
     }
 
     if (showOptions) {
@@ -1189,6 +1306,10 @@ private fun PaneView(
     pane: PaneState,
     data: PaneData,
     sel: SelectionState,
+    sortMode: SortMode,
+    descending: Boolean,
+    onCycleSort: () -> Unit,
+    onToggleDirection: () -> Unit,
     compact: Boolean,
     highlighted: Boolean,
     hasUp: Boolean,
@@ -1196,6 +1317,7 @@ private fun PaneView(
     onNavigate: (String) -> Unit,
     onUp: () -> Unit,
     onOpenArchive: (String) -> Unit,
+    onEditText: (FileItem) -> Unit,
     onMessage: (String) -> Unit,
     onChanged: () -> Unit,
     onClipboard: (List<String>, Boolean) -> Unit,
@@ -1205,6 +1327,7 @@ private fun PaneView(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val category = pane.category
+    val listState = rememberLazyListState()
     var actionItem by remember { mutableStateOf<FileItem?>(null) }
     var infoItem by remember { mutableStateOf<FileItem?>(null) }
     var renameItem by remember { mutableStateOf<FileItem?>(null) }
@@ -1212,6 +1335,11 @@ private fun PaneView(
     var showNewFolder by remember { mutableStateOf(false) }
     var showNewFile by remember { mutableStateOf(false) }
     var inputName by remember { mutableStateOf("") }
+
+    // Scroll back to the top whenever the sort mode, direction, or folder changes
+    LaunchedEffect(pane.path, pane.category, sortMode, descending) {
+        listState.scrollToItem(0)
+    }
 
     Column(
         modifier = modifier
@@ -1226,8 +1354,12 @@ private fun PaneView(
             .clickable(enabled = compact) { onActivate() }
             .padding(if (compact) 8.dp else 12.dp),
     ) {
-        if (category == null) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (category == null) {
                 GlassChip(
                     text = "+ Folder",
                     onClick = {
@@ -1236,18 +1368,32 @@ private fun PaneView(
                     },
                 )
                 GlassChip(text = "+ File", onClick = { showNewFile = true })
+            } else {
+                Text(
+                    text = if (data.loading) {
+                        "Scanning internal storage…"
+                    } else {
+                        "${category.label}: ${data.entries.size} file(s)"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CronosCyan,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
             }
-        } else {
-            Text(
-                text = if (data.loading) {
-                    "Scanning internal storage…"
-                } else {
-                    "${category.label}: ${data.entries.size} file(s)"
-                },
-                style = MaterialTheme.typography.labelMedium,
-                color = CronosCyan,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            if (category == null) {
+                Spacer(Modifier.weight(1f))
+            }
+            GlassChip(
+                text = "Sort: ${sortMode.label}",
+                selected = false,
+                onClick = onCycleSort,
+            )
+            GlassChip(
+                text = if (descending) "↓" else "↑",
+                selected = descending,
+                onClick = onToggleDirection,
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -1284,9 +1430,9 @@ private fun PaneView(
                         textAlign = TextAlign.Center,
                     )
                 }
-                else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                     if (hasUp && category == null) {
-                        item {
+                        item(key = "..up..") {
                             UpRow(compact = compact, onClick = onUp)
                         }
                     }
@@ -1297,7 +1443,7 @@ private fun PaneView(
                             checked = item.path in sel.selected,
                             compact = compact,
                             subtitle = when {
-                                category != null -> File(item.path).parent.orEmpty()
+                                category != null -> "${formatBytes(item.size)} · ${File(item.path).parent.orEmpty()}"
                                 item.directory -> "Folder"
                                 compact -> formatBytes(item.size)
                                 else -> "${formatBytes(item.size)} · ${formatTime(item.modified)}"
@@ -1307,7 +1453,7 @@ private fun PaneView(
                                 when {
                                     sel.selecting -> toggleSelect(sel, item.path)
                                     item.directory -> onNavigate(item.path)
-                                    else -> openFile(context, item, onOpenArchive, onMessage)
+                                    else -> openFile(context, item, onOpenArchive, onEditText, onMessage)
                                 }
                             },
                             onMore = { actionItem = item },
@@ -1329,6 +1475,17 @@ private fun PaneView(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(14.dp))
+                if (!item.directory && isTextEditable(item.name)) {
+                    PrimaryButton(
+                        text = "Edit / View Text",
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            onEditText(item)
+                            actionItem = null
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 SecondaryButton(
                     text = "Info",
                     modifier = Modifier.fillMaxWidth(),
@@ -1530,6 +1687,127 @@ private fun PaneView(
                         },
                     )
                 }
+            }
+        }
+    }
+}
+
+/** Built-in Text Viewer & Editor Dialog for .ini, .cfg, .conf, .txt, .json, .xml, and .log files. */
+@Composable
+private fun TextEditorDialog(
+    item: FileItem,
+    onSaved: () -> Unit,
+    onError: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var text by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(true) }
+    var saving by remember { mutableStateOf(false) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(item.path) {
+        loading = true
+        loadError = null
+        val res = withContext(Dispatchers.IO) { readTextItem(context, item) }
+        res.onSuccess { text = it }
+            .onFailure { loadError = it.message ?: "Could not read this file as text." }
+        loading = false
+    }
+
+    Dialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.92f))
+                .safeDrawingPadding()
+                .padding(16.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "TEXT & CONFIG EDITOR",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CronosCyan,
+                        letterSpacing = 1.2.sp,
+                    )
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = { if (!saving) onDismiss() }) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextPrimary)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .glassSurface(18.dp)
+                    .padding(12.dp),
+            ) {
+                when {
+                    loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
+                    }
+                    loadError != null -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(text = loadError.orEmpty(), color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    else -> BasicTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState()),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = TextPrimary,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp,
+                        ),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SecondaryButton(
+                    text = "Cancel",
+                    modifier = Modifier.weight(1f),
+                    onClick = { if (!saving) onDismiss() },
+                )
+                PrimaryButton(
+                    text = if (saving) "Saving…" else "Save changes",
+                    modifier = Modifier.weight(1f),
+                    enabled = !loading && !saving && loadError == null,
+                    onClick = {
+                        saving = true
+                        val updated = text
+                        scope.launch {
+                            val res = withContext(Dispatchers.IO) { writeTextItem(context, item, updated) }
+                            saving = false
+                            res.onSuccess {
+                                onSaved()
+                                onDismiss()
+                            }.onFailure { err ->
+                                onError(err.message ?: "Could not save changes.")
+                            }
+                        }
+                    },
+                )
             }
         }
     }
@@ -1740,7 +2018,7 @@ private fun SearchBar(query: String, onQuery: (String) -> Unit, onClear: () -> U
 }
 
 @Composable
-private fun PathCard(title: String, storagePath: String) {
+private fun PathCard(title: String, itemCount: Int, storagePath: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1763,6 +2041,20 @@ private fun PathCard(title: String, storagePath: String) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(CronosCyan.copy(alpha = 0.14f))
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    text = "$itemCount items",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CronosCyan,
+                    fontSize = 10.sp,
+                )
+            }
         }
         Spacer(Modifier.height(4.dp))
         StorageSpaceBar(path = storagePath)
@@ -2285,7 +2577,7 @@ private fun NewFileDialog(
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("New file.txt") }
     var busy by remember { mutableStateOf(false) }
-    val extensions = listOf(".txt", ".md", ".json", ".html", ".csv", ".log", ".kt", ".xml")
+    val extensions = listOf(".txt", ".ini", ".cfg", ".json", ".md", ".log", ".xml", ".sh")
     Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
         SolidDialogCard(glow = CronosCyan) {
             Text("New file", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
