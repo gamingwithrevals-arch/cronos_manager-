@@ -95,6 +95,7 @@ import com.cronoszip.app.data.FileItem
 import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.FileOperations
 import com.cronoszip.app.data.FileScan
+import com.cronoszip.app.data.FileSort
 import com.cronoszip.app.data.FileTools
 import com.cronoszip.app.data.FileTransfer
 import com.cronoszip.app.data.ListOptions
@@ -234,7 +235,7 @@ private suspend fun loadPane(pane: PaneState, data: PaneData, opts: ListOptions)
     } else {
         data.entries = emptyList()
         FileScan.find(File(internalRoot())) { f -> f.isFile && f.extension.lowercase() in category.extensions }
-            .collect { found -> data.entries = sortItems(found, opts) }
+            .collect { found -> data.entries = FileSort.sort(found, opts.sort, opts.descending) }
         data.loading = false
     }
 }
