@@ -44,7 +44,9 @@ fun InstalledAppsScreen(onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val byteProgress = remember { MutableStateFlow(0L to 0L) }
-    val (copiedBytes, totalBytes) by byteProgress.collectAsState()
+    val progress by byteProgress.collectAsState()
+    val copiedBytes = progress.first
+    val totalBytes = progress.second
 
     var apps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
