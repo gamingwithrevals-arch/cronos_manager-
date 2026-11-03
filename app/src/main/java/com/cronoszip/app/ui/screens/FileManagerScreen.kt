@@ -578,11 +578,7 @@ private fun Context.findActivity(): Activity? {
     return null
 }
 
-/** Apple iOS-inspired refined frosted glass surface. */
-private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
-    .clip(RoundedCornerShape(radius))
-    .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.045f))
-    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
+private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = liquidGlass(radius)
 @Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
@@ -1164,7 +1160,7 @@ fun FileManagerScreen(
     }
 
     editingTextItem?.let { target ->
-        TextEditorDialog(
+        FileTextEditor(
             item = target,
             onSaved = {
                 message = "Saved ${target.name}."
