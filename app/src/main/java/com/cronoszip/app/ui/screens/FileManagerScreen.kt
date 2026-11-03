@@ -3,7 +3,6 @@ package com.cronoszip.app.ui.screens
 import android.Manifest
 import android.app.Activity
 import android.content.Context
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import androidx.activity.compose.BackHandler
@@ -15,7 +14,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -36,13 +34,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreHoriz
@@ -67,14 +62,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -100,15 +93,13 @@ import com.cronoszip.app.data.FileDetails
 import com.cronoszip.app.data.FileItem
 import com.cronoszip.app.data.FileListing
 import com.cronoszip.app.data.FileOperations
-import com.cronoszip.app.data.FileSearch
+import com.cronoszip.app.data.FileScan
 import com.cronoszip.app.data.FileTools
 import com.cronoszip.app.data.FileTransfer
 import com.cronoszip.app.data.ListOptions
-import com.cronoszip.app.data.SafStorage
 import com.cronoszip.app.data.SortMode
 import com.cronoszip.app.data.TransferKind
 import com.cronoszip.app.data.TransferProgress
-import com.cronoszip.app.ui.components.BackCircle
 import com.cronoszip.app.ui.components.GlassCard
 import com.cronoszip.app.ui.components.GlassChip
 import com.cronoszip.app.ui.components.PrimaryButton
@@ -136,50 +127,48 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Remembers which finished extraction the Files screen already jumped to, so it jumps once per result. */
+/** Remembers which finished extraction the Files screen already jumped to. */
 private object ExtractionHint {
     var applied: String? = null
 }
 
-/** Items picked in select mode, plus the items waiting to be pasted. */
+/** The file kinds shown by the quick jump row. Each one is a flat list of files, with no folders. */
+private enum class Category(val label: String, val extensions: Set<String>, val emptyText: String) {
+    Images("Images", setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic"), "No image files found in internal storage."),
+    Movies("Movies", setOf("mp4", "mkv", "webm", "avi", "mov", "3gp", "m4v"), "No video files found in internal storage."),
+    Music("Music", setOf("mp3", "m4a", "flac", "ogg", "wav", "aac", "opus"), "No music files found in internal storage."),
+    Apk("APP", setOf("apk"), "No APK files found in internal storage."),
+    Compress("Compress", setOf("zip", "7z", "tar", "gz", "tgz", "rar", "xz"), "No compressed files found in internal storage.")
+}
+
+/** What one pane shows: a folder, or a category when [category] is set. */
+private class PaneState(initialPath: String) {
+    var path by mutableStateOf(initialPath)
+    var category by mutableStateOf<Category?>(null)
+}
+
+/** The rows and status of one pane, loaded from storage. */
+private class PaneData {
+    var entries by mutableStateOf<List<FileItem>>(emptyList())
+    var loading by mutableStateOf(false)
+    var error by mutableStateOf<String?>(null)
+}
+
+/** Items picked in select mode, the copy or move waiting for Paste, and the running transfer. */
 private class SelectionState {
     var selecting by mutableStateOf(false)
     val selected = mutableStateListOf<String>()
-    var batch by mutableStateOf<BatchClip?>(null)
+    var clipboard by mutableStateOf<Clip?>(null)
     var progress by mutableStateOf<TransferProgress?>(null)
 }
 
-/** Items waiting to be pasted: copied (cut = false) or moved (cut = true). */
-private data class BatchClip(val paths: List<String>, val cut: Boolean)
+/** Items copied (cut = false) or cut (cut = true), waiting for Paste. */
+private data class Clip(val paths: List<String>, val cut: Boolean)
 
-/** Which kinds of entries a quick jump shows. */
-private enum class ListFilter { None, Apk, Archive }
+/** A copy or move that is waiting on the conflict dialog. */
+private data class PendingTransfer(val paths: List<String>, val cut: Boolean, val dest: String, val names: List<String>)
 
-/** One of the buttons in the quick jump row. */
-private data class QuickJump(val label: String, val path: String, val filter: ListFilter)
-
-/** The quick jump row: Internal, Images, Movies, Music, APP and Compress. */
-private fun quickJumps(): List<QuickJump> {
-    val internal = Environment.getExternalStorageDirectory().absolutePath
-    val download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
-    return listOf(
-        QuickJump("Internal", internal, ListFilter.None),
-        QuickJump("Images", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).absolutePath, ListFilter.None),
-        QuickJump("Movies", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath, ListFilter.None),
-        QuickJump("Music", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC).absolutePath, ListFilter.None),
-        QuickJump("APP", download, ListFilter.Apk),
-        QuickJump("Compress", download, ListFilter.Archive),
-    )
-}
-
-/** Whether an entry should show under the current quick jump filter. Folders always show. */
-private fun passesFilter(item: FileItem, filter: ListFilter): Boolean = when (filter) {
-    ListFilter.None -> true
-    ListFilter.Apk -> item.directory || item.name.endsWith(".apk", ignoreCase = true)
-    ListFilter.Archive -> item.directory || isArchive(item.name)
-}
-
-/** The internal storage root. Navigation never goes above this folder. */
+/** Internal storage root. Navigation never goes above this folder. */
 private fun internalRoot(): String = Environment.getExternalStorageDirectory().absolutePath
 
 /** True when [path] is the internal root or inside it. */
@@ -188,17 +177,22 @@ private fun insideRoot(path: String): Boolean {
     return path == root || path.startsWith("$root/")
 }
 
-private fun toggleSelect(sel: SelectionState, path: String) {
-    if (path in sel.selected) sel.selected.remove(path) else sel.selected.add(path)
+/** The folder above [path], or null at the internal root. */
+private fun upPathOf(path: String): String? {
+    if (path == internalRoot() || !insideRoot(path)) return null
+    return File(path).parent?.takeIf { insideRoot(it) }
 }
 
-private fun isLocalArchive(path: String): Boolean =
-    !SafStorage.isSaf(path) && isArchive(File(path).name)
+private fun isLocalArchive(path: String): Boolean = isArchive(File(path).name)
 
 private fun batchDone(b: BatchState): Int =
     b.items.count { it.status != BatchStatus.Waiting && it.status != BatchStatus.Working }
 
-/** The message shown when a folder can't be listed. Explains Android's restriction on app data folders. */
+private fun toggleSelect(sel: SelectionState, path: String) {
+    if (path in sel.selected) sel.selected.remove(path) else sel.selected.add(path)
+}
+
+/** The message shown when a folder can't be listed. */
 private fun unreadableMessage(path: String): String =
     if (path.contains("/Android/data") || path.contains("/Android/obb")) {
         "Android does not let Chronos Manager read other apps' private folders " +
@@ -207,15 +201,74 @@ private fun unreadableMessage(path: String): String =
         "This folder can't be read."
     }
 
-/** A soft, rounded surface used for every panel. The AMOLED theme makes it pure black. */
-private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
-    .clip(RoundedCornerShape(radius))
-    .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.05f))
-    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
-    /** How long the second back press has to come before the exit warning clears itself. */
-private const val EXIT_WINDOW_MS = 2000L
+/** Sorts a flat list the same way the folder lists are sorted. */
+private fun sortItems(items: List<FileItem>, opts: ListOptions): List<FileItem> {
+    val visible = items.filter { opts.showHidden || !it.name.startsWith(".") }
+    val byName: Comparator<FileItem> = compareBy { it.name.lowercase() }
+    val comparator: Comparator<FileItem> = when (opts.sort) {
+        SortMode.Name -> byName
+        SortMode.Size -> compareBy<FileItem> { it.size }.thenBy { it.name.lowercase() }
+        SortMode.Date -> compareBy<FileItem> { it.modified }.thenBy { it.name.lowercase() }
+        SortMode.Type -> compareBy<FileItem> { it.name.substringAfterLast('.', "").lowercase() }
+            .thenBy { it.name.lowercase() }
+    }
+    val ordered = if (opts.descending) visible.sortedWith(comparator.reversed()) else visible.sortedWith(comparator)
+    return ordered.sortedBy { !it.directory }
+}
 
-/** Finds the Activity behind a context, so the back handler can close the app. */
+/** Loads the rows of one pane. A folder lists its contents; a category scans all of internal storage. */
+private suspend fun loadPane(pane: PaneState, data: PaneData, opts: ListOptions) {
+    data.loading = true
+    data.error = null
+    val category = pane.category
+    if (category == null) {
+        val items = withContext(Dispatchers.IO) { FileListing.listLocal(pane.path, opts) }
+        if (items == null) {
+            data.error = unreadableMessage(pane.path)
+            data.entries = emptyList()
+        } else {
+            data.entries = items
+        }
+        data.loading = false
+    } else {
+        data.entries = emptyList()
+        FileScan.find(File(internalRoot())) { f -> f.isFile && f.extension.lowercase() in category.extensions }
+            .collect { found -> data.entries = sortItems(found, opts) }
+        data.loading = false
+    }
+}
+
+/** Folders that match what the user typed after a slash. Only folders inside internal storage are offered. */
+private fun pathSuggestionsFor(typed: String): List<String> {
+    val asFile = File(typed)
+    val parent: File
+    val prefix: String
+    if (typed.endsWith("/")) {
+        parent = asFile
+        prefix = ""
+    } else {
+        parent = asFile.parentFile ?: return emptyList()
+        prefix = asFile.name
+    }
+    if (!parent.isDirectory || !insideRoot(parent.absolutePath)) return emptyList()
+    return parent.listFiles()
+        .orEmpty()
+        .filter { it.isDirectory && !it.name.startsWith(".") && it.name.startsWith(prefix, ignoreCase = true) }
+        .filter { insideRoot(it.absolutePath) }
+        .sortedBy { it.name.lowercase() }
+        .take(8)
+        .map { it.absolutePath }
+}
+
+/** Opens an archive in the extraction screen. Anything else opens in the matching app. */
+private fun openFile(context: Context, item: FileItem, onArchive: (String) -> Unit, onMessage: (String) -> Unit) {
+    if (!item.directory && isArchive(item.name)) {
+        onArchive(item.path)
+        return
+    }
+    FileOpener.open(context, item.path).onFailure { onMessage(it.message ?: "This file could not be opened.") }
+}
+
 private fun Context.findActivity(): Activity? {
     var current: Context? = this
     while (current is android.content.ContextWrapper) {
@@ -225,13 +278,12 @@ private fun Context.findActivity(): Activity? {
     return null
 }
 
-/** The folder above [path]. Null at the internal root, so navigation never leaves internal storage. */
-private fun upPathOf(path: String): String? {
-    if (!insideRoot(path) || path == internalRoot()) return null
-    return File(path).parent?.takeIf { insideRoot(it) }
-}
-
-@Composable
+/** A soft, rounded surface used for every panel. The AMOLED theme makes it pure black. */
+private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
+    .clip(RoundedCornerShape(radius))
+    .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.05f))
+    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
+    @Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
     onBack: (() -> Unit)?,
@@ -242,195 +294,166 @@ fun FileManagerScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
-    val rootPath = internalRoot()
+    val root = internalRoot()
+    remember(context) { AppPrefs.load(context) }
 
     var granted by remember { mutableStateOf(hasStorageAccess(context)) }
     var split by remember { mutableStateOf(false) }
-    var activePane by remember { mutableStateOf(0) }
-    var pathA by remember { mutableStateOf(rootPath) }
-    var pathB by remember { mutableStateOf(rootPath) }
-    var filterA by remember { mutableStateOf(ListFilter.None) }
-    var filterB by remember { mutableStateOf(ListFilter.None) }
+    var activeIndex by remember { mutableStateOf(0) }
+    val paneA = remember { PaneState(root) }
+    val paneB = remember { PaneState(root) }
+    val dataA = remember { PaneData() }
+    val dataB = remember { PaneData() }
+    val sel = remember { SelectionState() }
+    val batch by BatchExtractor.state.collectAsState()
+    val extraction by viewModel.extraction.collectAsState()
     var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<FileItem>>(emptyList()) }
+    var searchResults by remember { mutableStateOf<List<FileItem>>(emptyList()) }
+    var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var refresh by remember { mutableStateOf(0) }
     var message by remember { mutableStateOf<String?>(null) }
+    var pending by remember { mutableStateOf<PendingTransfer?>(null) }
     var exitArmed by remember { mutableStateOf(false) }
     var showOptions by remember { mutableStateOf(false) }
     var showBatch by remember { mutableStateOf(false) }
     var showCompress by remember { mutableStateOf(false) }
+    var zipInputs by remember { mutableStateOf<List<String>>(emptyList()) }
     var zipName by remember { mutableStateOf("Archive.zip") }
     var compressing by remember { mutableStateOf(false) }
-    var confirmBatchDelete by remember { mutableStateOf(false) }
-    var conflictNames by remember { mutableStateOf<List<String>?>(null) }
+    var confirmDelete by remember { mutableStateOf(false) }
     var showHidden by remember { mutableStateOf(false) }
     var sortMode by remember { mutableStateOf(SortMode.Name) }
     var descending by remember { mutableStateOf(false) }
     val opts = ListOptions(showHidden = showHidden, sort = sortMode, descending = descending)
-    val batch by BatchExtractor.state.collectAsState()
-    val extraction by viewModel.extraction.collectAsState()
-    val sel = remember { SelectionState() }
-    val pathSuggestions by produceState<List<String>>(initialValue = emptyList(), query) {
-        val typed = query.trim()
-        if (typed.startsWith("/")) {
-            delay(120)
-            value = withContext(Dispatchers.IO) { pathSuggestionsFor(typed) }
-        } else {
-            value = emptyList()
-        }
+
+    val activePane = if (split && activeIndex == 1) paneB else paneA
+    val activeData = if (split && activeIndex == 1) dataB else dataA
+    val destPane = if (activeIndex == 0) paneB else paneA
+    val upActive = if (activePane.category == null) upPathOf(activePane.path) else null
+
+    fun goFolder(pane: PaneState, path: String) {
+        pane.category = null
+        pane.path = path
+        sel.selected.clear()
     }
 
-    val activePath = if (split && activePane == 1) pathB else pathA
-    val activeFilter = if (split && activePane == 1) filterB else filterA
-    val upActive = upPathOf(activePath)
-
-    // Moves the active pane to a folder. Used by the back button and by browsing inside a folder.
-    fun setActivePath(path: String) {
-        if (split && activePane == 1) pathB = path else pathA = path
-    }
-
-    // Quick jump: moves the active pane to a folder and applies its filter. Clears the search.
-    fun jumpTo(path: String, filter: ListFilter) {
-        if (split && activePane == 1) {
-            pathB = path
-            filterB = filter
-        } else {
-            pathA = path
-            filterA = filter
-        }
+    fun jump(category: Category?) {
+        activePane.category = category
+        activePane.path = root
         query = ""
+        sel.selected.clear()
     }
 
-    // Takes the selected items as a pending copy or move. The paste bar then asks where to put them.
+    fun setClipboard(paths: List<String>, cut: Boolean) {
+        sel.clipboard = Clip(paths, cut)
+        sel.selecting = false
+        sel.selected.clear()
+        message = "${if (cut) "Cut" else "Copied"} ${paths.size} item(s). Open a folder and tap Paste here."
+    }
+
     fun takeSelection(cut: Boolean) {
-        if (sel.selected.isEmpty()) {
+        val paths = sel.selected.toList()
+        if (paths.isEmpty()) {
             message = "Tap items to select them first."
             return
         }
-        val picked = sel.selected.toList()
-        sel.batch = BatchClip(picked, cut)
-        sel.selecting = false
-        sel.selected.clear()
-        val verb = if (cut) "Cut" else "Copied"
-        message = "$verb ${picked.size} item(s). Tap Paste here when you reach the folder."
+        setClipboard(paths, cut)
     }
 
-    // Runs the copy or move into the active folder with the chosen conflict policy.
-    fun runPaste(pending: BatchClip, policy: ConflictPolicy) {
-        val here = activePath
+    fun runTransfer(paths: List<String>, cut: Boolean, dest: String, policy: ConflictPolicy) {
         scope.launch {
-            val kind = if (pending.cut) TransferKind.Move else TransferKind.Copy
-            sel.progress = TransferProgress(if (pending.cut) "Moving" else "Copying", "", 0L, 0L, 0, pending.paths.size)
+            sel.progress = TransferProgress(if (cut) "Moving" else "Copying", "", 0L, 0L, 0, paths.size)
+            val kind = if (cut) TransferKind.Move else TransferKind.Copy
             val result = withContext(Dispatchers.IO) {
-                FileTransfer.run(kind, pending.paths, File(here), policy) { p ->
-                    scope.launch { sel.progress = p }
-                }
+                FileTransfer.run(kind, paths, File(dest), policy) { p -> scope.launch { sel.progress = p } }
             }
             sel.progress = null
             result
                 .onSuccess { count ->
-                    if (pending.cut) {
-                        sel.batch = null
-                    }
-                    message = "Pasted $count item(s)."
+                    message = "${if (cut) "Moved" else "Copied"} $count item(s)."
+                    if (cut && sel.clipboard?.paths == paths) sel.clipboard = null
                 }
                 .onFailure { error ->
-                    message = if (error is InterruptedException) "Cancelled." else (error.message ?: "Paste failed.")
+                    message = if (error is InterruptedException) "Cancelled." else (error.message ?: "Transfer failed.")
                 }
             refresh++
         }
     }
 
-    // Checks for name clashes first. If there are any, the conflict dialog asks what to do.
-    fun requestPaste() {
-        val pending = sel.batch ?: return
-        if (!insideRoot(activePath)) {
-            message = "Paste works inside internal storage only."
+    fun startTransfer(paths: List<String>, cut: Boolean, dest: String) {
+        if (paths.isEmpty()) return
+        if (!insideRoot(dest)) {
+            message = "Choose a folder inside internal storage."
             return
         }
-        val names = FileTransfer.conflicts(pending.paths, File(activePath))
+        if (paths.all { File(it).parent == dest }) {
+            message = "Those items are already in this folder."
+            return
+        }
+        val names = FileTransfer.conflicts(paths, File(dest))
         if (names.isNotEmpty()) {
-            conflictNames = names
+            pending = PendingTransfer(paths, cut, dest, names)
         } else {
-            runPaste(pending, ConflictPolicy.KeepBoth)
+            runTransfer(paths, cut, dest, ConflictPolicy.KeepBoth)
         }
     }
 
-    LaunchedEffect(AppPrefs.amoled) { refresh++ }
+    fun pasteClipboard() {
+        val clip = sel.clipboard ?: return
+        if (activePane.category != null) {
+            message = "Open a folder to paste into."
+            return
+        }
+        startTransfer(clip.paths, clip.cut, activePane.path)
+    }
 
-    // Changing folder ends the current selection, so picks never point at the wrong folder.
-    LaunchedEffect(pathA, pathB) {
+    fun transferSelected(cut: Boolean, dest: PaneState) {
+        val paths = sel.selected.toList()
+        if (paths.isEmpty()) {
+            message = "Tap items to select them first."
+            return
+        }
+        if (dest.category != null) {
+            message = "Open a folder in the other pane first."
+            return
+        }
+        sel.selecting = false
         sel.selected.clear()
+        startTransfer(paths, cut, dest.path)
     }
 
-    // When a batch finishes, refresh the lists so new files appear.
-    LaunchedEffect(batch.finished) {
-        if (batch.finished) refresh++
-    }
-
-    // After an extraction finishes, open the folder the files were extracted into.
-    LaunchedEffect(extraction.success, extraction.output) {
-        val out = extraction.output
-        if (extraction.success && out.isNotBlank() && out != ExtractionHint.applied) {
-            ExtractionHint.applied = out
-            pathA = out
-            filterA = ListFilter.None
-            activePane = 0
-            sel.selected.clear()
-            message = "Showing the extracted files."
+    fun deletePaths(paths: List<String>) {
+        if (paths.isEmpty()) return
+        scope.launch {
+            sel.progress = TransferProgress("Deleting", "", 0L, 0L, 0, paths.size)
+            val result = withContext(Dispatchers.IO) {
+                FileTransfer.run(TransferKind.Delete, paths, null) { p -> scope.launch { sel.progress = p } }
+            }
+            sel.progress = null
+            message = result.fold(
+                onSuccess = { "Deleted $it item(s)." },
+                onFailure = { error ->
+                    if (error is InterruptedException) "Delete cancelled." else (error.message ?: "Delete failed.")
+                },
+            )
+            refresh++
         }
     }
 
-    // Live search for normal words. A path that starts with / shows folder suggestions instead.
-    LaunchedEffect(query) {
-        val typed = query.trim()
-        if (typed.isBlank() || typed.startsWith("/")) {
-            results = emptyList()
-            searching = false
+    fun openSearchPath(path: String) {
+        goFolder(activePane, path)
+        query = ""
+    }
+
+    fun openSearchItem(item: FileItem) {
+        if (item.directory) {
+            goFolder(activePane, item.path)
         } else {
-            searching = true
-            delay(250)
-            results = withContext(Dispatchers.IO) { FileSearch.find(rootPath, typed, 200) }
-            searching = false
+            goFolder(activePane, File(item.path).parent.orEmpty())
+            message = "Found ${item.name}."
         }
-    }
-
-    // The second back press within the window exits. The warning clears itself afterwards.
-    LaunchedEffect(exitArmed) {
-        if (exitArmed) {
-            delay(EXIT_WINDOW_MS)
-            exitArmed = false
-            message = null
-        }
-    }
-
-    // One back handler decides what Back does, in this order:
-    // leave select mode, cancel a pending paste, clear the search, go up a folder, then exit on the second press.
-    BackHandler(enabled = true) {
-        when {
-            sel.selecting -> {
-                sel.selecting = false
-                sel.selected.clear()
-            }
-            sel.batch != null -> {
-                sel.batch = null
-                message = "Cancelled."
-            }
-            query.isNotBlank() -> {
-                query = ""
-            }
-            upActive != null -> {
-                setActivePath(upActive)
-            }
-            exitArmed -> {
-                context.findActivity()?.finish()
-            }
-            else -> {
-                exitArmed = true
-                message = "Press back again to exit."
-            }
-        }
+        query = ""
     }
 
     val legacyPermission = rememberLauncherForActivityResult(
@@ -448,209 +471,287 @@ fun FileManagerScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
+    LaunchedEffect(paneA.path, paneA.category, refresh, opts) { loadPane(paneA, dataA, opts) }
+    LaunchedEffect(paneB.path, paneB.category, refresh, opts) { loadPane(paneB, dataB, opts) }
+    LaunchedEffect(paneA.path, paneA.category, paneB.path, paneB.category) { sel.selected.clear() }
+    LaunchedEffect(batch.finished) {
+        if (batch.finished) refresh++
+    }
+
+    LaunchedEffect(extraction.success, extraction.output) {
+        val out = extraction.output
+        if (extraction.success && out.isNotBlank() && out != ExtractionHint.applied) {
+            ExtractionHint.applied = out
+            goFolder(paneA, out)
+            activeIndex = 0
+            message = "Showing the extracted files."
+        }
+    }
+
+    LaunchedEffect(query) {
+        val typed = query.trim()
+        searchResults = emptyList()
+        suggestions = emptyList()
+        if (typed.isBlank()) {
+            searching = false
+            return@LaunchedEffect
+        }
+        delay(200)
+        if (typed.startsWith("/")) {
+            suggestions = withContext(Dispatchers.IO) { pathSuggestionsFor(typed) }
+        } else {
+            searching = true
+            FileScan.find(File(root)) { f -> f.name.contains(typed, ignoreCase = true) }
+                .collect { searchResults = it }
+            searching = false
+        }
+    }
+
+    LaunchedEffect(exitArmed) {
+        if (exitArmed) {
+            delay(2000)
+            exitArmed = false
+            message = null
+        }
+    }
+
+    BackHandler(enabled = true) {
+        when {
+            sel.selecting -> {
+                sel.selecting = false
+                sel.selected.clear()
+            }
+            sel.clipboard != null -> {
+                sel.clipboard = null
+                message = "Cancelled."
+            }
+            query.isNotBlank() -> {
+                query = ""
+            }
+            activePane.category != null -> {
+                activePane.category = null
+            }
+            upActive != null -> {
+                goFolder(activePane, upActive)
+            }
+            exitArmed -> {
+                context.findActivity()?.finish()
+            }
+            else -> {
+                exitArmed = true
+                message = "Press back again to exit."
+            }
+        }
+    }
         Column(
         modifier = Modifier
             .fillMaxSize()
             .safeDrawingPadding()
             .padding(horizontal = 16.dp),
     ) {
-        TopBar(
-            title = "Files",
-            onMore = { showOptions = true },
-        )
+        TopBar(title = "Files", onMore = { showOptions = true })
         Spacer(Modifier.height(12.dp))
 
-        ModeSwitch(split = split, onChange = { split = it; activePane = 0 })
+        ModeSwitch(split = split, onChange = {
+            split = it
+            activeIndex = 0
+        })
         Spacer(Modifier.height(12.dp))
 
-        QuickJumpRow(
-            activePath = activePath,
-            activeFilter = activeFilter,
-            onJump = { jump -> jumpTo(jump.path, jump.filter) },
-        )
+        QuickJumpRow(selected = activePane.category, onJump = { jump(it) })
         Spacer(Modifier.height(10.dp))
 
-        SearchBar(
-            query = query,
-            onQuery = { query = it },
-            onClear = { query = "" },
-        )
+        SearchBar(query = query, onQuery = { query = it }, onClear = { query = "" })
         Spacer(Modifier.height(10.dp))
 
-        if (query.isNotBlank()) {
-            SearchPanel(
-                query = query,
-                results = results,
-                searching = searching,
-                suggestions = pathSuggestions,
-                onPickPath = { path -> jumpTo(path, ListFilter.None) },
-                onPickItem = { item ->
-                    if (item.directory) {
-                        jumpTo(item.path, ListFilter.None)
-                    } else {
-                        jumpTo(File(item.path).parent.orEmpty(), ListFilter.None)
-                        message = "Found ${item.name}."
-                    }
-                },
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+        if (granted) {
+            PathCard(
+                title = activePane.category?.let { "All ${it.label.lowercase()} · ${activeData.entries.size} file(s)" }
+                    ?: activePane.path,
+                storagePath = root,
             )
-        } else {
-             PathCard(path = activePath)
             Spacer(Modifier.height(10.dp))
+        }
 
-            if (batch.items.isNotEmpty()) {
-                BatchPill(batch = batch, onClick = { showBatch = true })
-                Spacer(Modifier.height(10.dp))
-            }
+        if (batch.items.isNotEmpty()) {
+            BatchPill(batch = batch, onClick = { showBatch = true })
+            Spacer(Modifier.height(10.dp))
+        }
 
-            sel.progress?.let { p ->
-                TransferBar(p = p, onCancel = { FileTransfer.cancel() })
-                Spacer(Modifier.height(10.dp))
-            }
+        message?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = CronosCyan,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
 
-            message?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = CronosCyan,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-            }
-
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                when {
-                    !granted -> PermissionCard(
-                        onAllow = {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                requestAllFilesAccess(context)
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            when {
+                !granted -> PermissionCard(
+                    onAllow = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            requestAllFilesAccess(context)
+                        } else {
+                            val perms = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
                             } else {
-                                val perms = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                                    arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                                } else {
-                                    arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-                                }
-                                legacyPermission.launch(perms)
+                                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
                             }
-                        },
-                    )
-                    split -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
-                        FolderView(
-                            path = pathA,
-                            filter = filterA,
-                            onPath = { pathA = it },
-                            sel = sel,
-                            opts = opts,
-                            refreshToken = refresh,
-                            compact = true,
-                            highlighted = activePane == 0,
-                            onActivate = { activePane = 0 },
-                            onChanged = { refresh++ },
-                            onOpenArchive = onOpenArchive,
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                        )
-                        FolderView(
-                            path = pathB,
-                            filter = filterB,
-                            onPath = { pathB = it },
-                            sel = sel,
-                            opts = opts,
-                            refreshToken = refresh,
-                            compact = true,
-                            highlighted = activePane == 1,
-                            onActivate = { activePane = 1 },
-                            onChanged = { refresh++ },
-                            onOpenArchive = onOpenArchive,
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                        )
-                    }
-                    else -> FolderView(
-                        path = pathA,
-                        filter = filterA,
-                        onPath = { pathA = it },
+                            legacyPermission.launch(perms)
+                        }
+                    },
+                )
+                query.isNotBlank() -> SearchPanel(
+                    query = query,
+                    results = searchResults,
+                    searching = searching,
+                    suggestions = suggestions,
+                    onPickPath = { openSearchPath(it) },
+                    onPickItem = { openSearchItem(it) },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                split -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
+                    PaneView(
+                        pane = paneA,
+                        data = dataA,
                         sel = sel,
-                        opts = opts,
-                        refreshToken = refresh,
-                        compact = false,
-                        highlighted = false,
-                        onActivate = {},
-                        onChanged = { refresh++ },
+                        compact = true,
+                        highlighted = activeIndex == 0,
+                        onActivate = { activeIndex = 0 },
+                        onNavigate = { goFolder(paneA, it) },
                         onOpenArchive = onOpenArchive,
-                        modifier = Modifier.fillMaxSize(),
+                        onMessage = { message = it },
+                        onChanged = { refresh++ },
+                        onClipboard = { paths, cut -> setClipboard(paths, cut) },
+                        onDelete = { deletePaths(it) },
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    PaneView(
+                        pane = paneB,
+                        data = dataB,
+                        sel = sel,
+                        compact = true,
+                        highlighted = activeIndex == 1,
+                        onActivate = { activeIndex = 1 },
+                        onNavigate = { goFolder(paneB, it) },
+                        onOpenArchive = onOpenArchive,
+                        onMessage = { message = it },
+                        onChanged = { refresh++ },
+                        onClipboard = { paths, cut -> setClipboard(paths, cut) },
+                        onDelete = { deletePaths(it) },
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
                 }
-            }
-
-            sel.batch?.let { pending ->
-                Spacer(Modifier.height(10.dp))
-                PasteBar(
-                    count = pending.paths.size,
-                    cut = pending.cut,
-                    destination = activePath,
-                    onPaste = { requestPaste() },
-                    onCancel = {
-                        sel.batch = null
-                        message = "Cancelled."
-                    },
+                else -> PaneView(
+                    pane = paneA,
+                    data = dataA,
+                    sel = sel,
+                    compact = false,
+                    highlighted = false,
+                    onActivate = {},
+                    onNavigate = { goFolder(paneA, it) },
+                    onOpenArchive = onOpenArchive,
+                    onMessage = { message = it },
+                    onChanged = { refresh++ },
+                    onClipboard = { paths, cut -> setClipboard(paths, cut) },
+                    onDelete = { deletePaths(it) },
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
+        }
+                sel.progress?.let { p ->
+            Spacer(Modifier.height(10.dp))
+            TransferBar(p = p, onCancel = { FileTransfer.cancel() })
+        }
 
-            if (sel.selecting) {
-                Spacer(Modifier.height(10.dp))
-                SelectionDock(
-                    count = sel.selected.size,
-                    archiveCount = sel.selected.count { isLocalArchive(it) },
-                    onSelectAll = {
-                        listAllVisible(activePath, activeFilter, opts).forEach { p ->
-                            if (p !in sel.selected) sel.selected.add(p)
-                        }
-                        message = "Selected ${sel.selected.size} item(s)."
-                    },
-                    onCopy = { takeSelection(cut = false) },
-                    onMove = { takeSelection(cut = true) },
-                    onDelete = {
-                        if (sel.selected.isEmpty()) {
+        sel.clipboard?.let { clip ->
+            Spacer(Modifier.height(10.dp))
+            PasteBar(
+                count = clip.paths.size,
+                cut = clip.cut,
+                destination = if (activePane.category == null) activePane.path else "Open a folder to paste into",
+                canPaste = activePane.category == null,
+                onPaste = { pasteClipboard() },
+                onCancel = {
+                    sel.clipboard = null
+                    message = "Cancelled."
+                },
+            )
+        }
+
+        if (sel.selecting) {
+            Spacer(Modifier.height(10.dp))
+            SelectionDock(
+                count = sel.selected.size,
+                archiveCount = sel.selected.count { isLocalArchive(it) },
+                split = split,
+                sideLabel = if (activeIndex == 0) "right" else "left",
+                onSelectAll = {
+                    activeData.entries.forEach { item ->
+                        if (item.path !in sel.selected) sel.selected.add(item.path)
+                    }
+                    message = "Selected ${sel.selected.size} item(s)."
+                },
+                onCopy = {
+                    if (split) transferSelected(false, destPane) else takeSelection(false)
+                },
+                onMove = {
+                    if (split) transferSelected(true, destPane) else takeSelection(true)
+                },
+                onZip = {
+                    when {
+                        sel.selected.isEmpty() -> {
                             message = "Tap items to select them first."
-                        } else {
-                            confirmBatchDelete = true
                         }
-                    },
-                    onExtract = {
-                        val archives = sel.selected.filter { isLocalArchive(it) }
-                        when {
-                            sel.selected.isEmpty() -> {
-                                message = "Tap items to select them first."
-                            }
-                            archives.isEmpty() -> {
-                                message = "Select archive files (zip, 7z, tar, rar) to extract."
-                            }
-                            batch.running || viewModel.extraction.value.running -> {
-                                message = "Another extraction is running. Wait for it to finish."
-                            }
-                            else -> {
-                                val s = viewModel.settings
-                                BatchExtractor.start(archives, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault)
-                                sel.selecting = false
-                                sel.selected.clear()
-                                showBatch = true
-                            }
+                        activePane.category != null -> {
+                            message = "Open a folder first to save the zip."
                         }
-                    },
-                    onZip = {
-                        if (sel.selected.isEmpty()) {
-                            message = "Tap items to select them first."
-                        } else {
+                        else -> {
+                            zipInputs = sel.selected.toList()
                             showCompress = true
                         }
-                    },
-                    onDone = {
-                        sel.selecting = false
-                        sel.selected.clear()
-                    },
-                )
-            }
+                    }
+                },
+                onExtract = {
+                    val archives = sel.selected.filter { isLocalArchive(it) }
+                    when {
+                        sel.selected.isEmpty() -> {
+                            message = "Tap items to select them first."
+                        }
+                        archives.isEmpty() -> {
+                            message = "Select archive files (zip, 7z, tar, rar) to extract."
+                        }
+                        batch.running || viewModel.extraction.value.running -> {
+                            message = "Another extraction is running. Wait for it to finish."
+                        }
+                        else -> {
+                            val s = viewModel.settings
+                            BatchExtractor.start(archives, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault)
+                            sel.selecting = false
+                            sel.selected.clear()
+                            showBatch = true
+                        }
+                    }
+                },
+                onDelete = {
+                    if (sel.selected.isEmpty()) {
+                        message = "Tap items to select them first."
+                    } else {
+                        confirmDelete = true
+                    }
+                },
+                onDone = {
+                    sel.selecting = false
+                    sel.selected.clear()
+                },
+            )
         }
+        Spacer(Modifier.height(12.dp))
         }
-    if (showOptions) {
+            if (showOptions) {
         OptionsDialog(
             showHidden = showHidden,
             onHidden = { showHidden = it },
@@ -678,21 +779,21 @@ fun FileManagerScreen(
 
     if (showCompress) {
         CompressDialog(
-            count = sel.selected.size,
+            count = zipInputs.size,
             busy = compressing,
             name = zipName,
             onName = { zipName = it },
             onCancel = { showCompress = false },
             onCompress = { store ->
-                val inputs = sel.selected.toList()
                 val typed = zipName.trim()
                 val clean = if (typed.endsWith(".zip", ignoreCase = true)) typed else "$typed.zip"
                 if (typed.isBlank() || typed.contains('/') || typed.contains('\\')) {
                     message = "Use a plain name for the zip file."
-                } else if (inputs.isEmpty()) {
+                } else if (zipInputs.isEmpty()) {
                     message = "Nothing to zip. Select files first."
                 } else {
-                    val output = File(activePath, clean).absolutePath
+                    val output = File(activePane.path, clean).absolutePath
+                    val inputs = zipInputs
                     compressing = true
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
@@ -713,22 +814,25 @@ fun FileManagerScreen(
         )
     }
 
-    conflictNames?.let { names ->
+    pending?.let { p ->
         ConflictDialog(
-            names = names,
+            names = p.names,
             onChoose = { policy ->
-                val pending = sel.batch
-                conflictNames = null
-                if (pending != null) runPaste(pending, policy)
+                pending = null
+                runTransfer(p.paths, p.cut, p.dest, policy)
             },
-            onCancel = { conflictNames = null },
+            onCancel = { pending = null },
         )
     }
 
-    if (confirmBatchDelete) {
-        Dialog(onDismissRequest = { confirmBatchDelete = false }) {
+    if (confirmDelete) {
+        Dialog(onDismissRequest = { confirmDelete = false }) {
             SolidDialogCard(glow = Warning) {
-                Text("Delete ${sel.selected.size} item(s)?", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+                Text(
+                    text = "Delete ${sel.selected.size} item(s)?",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary,
+                )
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = "They will be deleted permanently. Folders are deleted with everything inside them.",
@@ -740,32 +844,17 @@ fun FileManagerScreen(
                     SecondaryButton(
                         text = "Cancel",
                         modifier = Modifier.weight(1f),
-                        onClick = { confirmBatchDelete = false },
+                        onClick = { confirmDelete = false },
                     )
                     PrimaryButton(
                         text = "Delete",
                         modifier = Modifier.weight(1f),
                         onClick = {
                             val paths = sel.selected.toList()
-                            confirmBatchDelete = false
+                            confirmDelete = false
                             sel.selecting = false
                             sel.selected.clear()
-                            scope.launch {
-                                sel.progress = TransferProgress("Deleting", "", 0L, 0L, 0, paths.size)
-                                val result = withContext(Dispatchers.IO) {
-                                    FileTransfer.run(TransferKind.Delete, paths, null) { p ->
-                                        scope.launch { sel.progress = p }
-                                    }
-                                }
-                                sel.progress = null
-                                message = result.fold(
-                                    onSuccess = { "Deleted $it item(s)." },
-                                    onFailure = { error ->
-                                        if (error is InterruptedException) "Delete cancelled." else (error.message ?: "Delete failed.")
-                                    },
-                                )
-                                refresh++
-                            }
+                            deletePaths(paths)
                         },
                     )
                 }
@@ -773,176 +862,27 @@ fun FileManagerScreen(
         }
     }
 }
-/** Folders that match what the user typed after a slash. Only folders inside internal storage are offered. */
-private fun pathSuggestionsFor(typed: String): List<String> {
-    val asFile = File(typed)
-    val parent: File
-    val prefix: String
-    if (typed.endsWith("/")) {
-        parent = asFile
-        prefix = ""
-    } else {
-        parent = asFile.parentFile ?: return emptyList()
-        prefix = asFile.name
-    }
-    if (!parent.isDirectory || !insideRoot(parent.absolutePath)) return emptyList()
-    return parent.listFiles()
-        .orEmpty()
-        .filter { it.isDirectory && !it.name.startsWith(".") && it.name.startsWith(prefix, ignoreCase = true) }
-        .filter { insideRoot(it.absolutePath) }
-        .sortedBy { it.name.lowercase() }
-        .take(8)
-        .map { it.absolutePath }
-}
-
-/** Every visible item in the active folder, used by Select all. */
-private fun listAllVisible(path: String, filter: ListFilter, opts: ListOptions): List<String> {
-    if (!insideRoot(path)) return emptyList()
-    return FileListing.listLocal(path, opts).orEmpty()
-        .filter { passesFilter(it, filter) }
-        .map { it.path }
-}
-
-/** What tapping a file does: archives go to the extraction screen, everything else opens in another app. */
-private fun openEntry(
-    context: Context,
-    item: FileItem,
-    onOpenArchive: (String) -> Unit,
-    onMessage: (String) -> Unit,
-) {
-    if (!item.directory && isArchive(item.name)) {
-        onOpenArchive(item.path)
-        return
-    }
-    FileOpener.open(context, item.path)
-        .onFailure { onMessage(it.message ?: "This file could not be opened.") }
-}
-
-/** The search panel. Shows folder jumps when the text starts with a slash, otherwise live file matches. */
+/** One browsing pane: its list of rows, the item menus, and the folder, file, rename and delete dialogs. */
 @Composable
-private fun SearchPanel(
-    query: String,
-    results: List<FileItem>,
-    searching: Boolean,
-    suggestions: List<String>,
-    onPickPath: (String) -> Unit,
-    onPickItem: (FileItem) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val typed = query.trim()
-    Column(
-        modifier = modifier
-            .glassSurface(20.dp)
-            .padding(12.dp),
-    ) {
-        if (typed.startsWith("/")) {
-            Text(
-                text = "Jump to folder",
-                style = MaterialTheme.typography.labelSmall,
-                color = TextSecondary,
-            )
-            Spacer(Modifier.height(8.dp))
-            val exact = File(typed).takeIf { it.isDirectory && insideRoot(it.absolutePath) }
-            if (exact != null) {
-                SearchRow(
-                    icon = Icons.Rounded.FolderOpen,
-                    title = "Go to ${exact.name}",
-                    subtitle = exact.absolutePath,
-                    onClick = { onPickPath(exact.absolutePath) },
-                )
-            }
-            suggestions.forEach { path ->
-                SearchRow(
-                    icon = Icons.Rounded.Folder,
-                    title = File(path).name,
-                    subtitle = path,
-                    onClick = { onPickPath(path) },
-                )
-            }
-            if (exact == null && suggestions.isEmpty()) {
-                Text(
-                    text = "No folder matches this path yet.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-            }
-        } else {
-            Text(
-                text = when {
-                    searching -> "Searching…"
-                    results.isEmpty() -> "No matches for \"$typed\""
-                    else -> "${results.size} match(es) in internal storage"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = TextSecondary,
-            )
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(results, key = { it.path }) { item ->
-                    SearchRow(
-                        icon = if (item.directory) Icons.Rounded.Folder else Icons.Rounded.Description,
-                        title = item.name,
-                        subtitle = File(item.path).parent.orEmpty(),
-                        onClick = { onPickItem(item) },
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SearchRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(imageVector = icon, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = TextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-/** One browsing pane: the folder list, the new folder and new file buttons, and the item menus. */
-@Composable
-private fun FolderView(
-    path: String,
-    filter: ListFilter,
-    onPath: (String) -> Unit,
+private fun PaneView(
+    pane: PaneState,
+    data: PaneData,
     sel: SelectionState,
-    opts: ListOptions,
-    refreshToken: Int,
     compact: Boolean,
     highlighted: Boolean,
     onActivate: () -> Unit,
-    onChanged: () -> Unit,
+    onNavigate: (String) -> Unit,
     onOpenArchive: (String) -> Unit,
+    onMessage: (String) -> Unit,
+    onChanged: () -> Unit,
+    onClipboard: (List<String>, Boolean) -> Unit,
+    onDelete: (List<String>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var entries by remember { mutableStateOf<List<FileItem>>(emptyList()) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var status by remember { mutableStateOf<String?>(null) }
+    val category = pane.category
+    val root = internalRoot()
     var actionItem by remember { mutableStateOf<FileItem?>(null) }
     var infoItem by remember { mutableStateOf<FileItem?>(null) }
     var renameItem by remember { mutableStateOf<FileItem?>(null) }
@@ -950,22 +890,7 @@ private fun FolderView(
     var showNewFolder by remember { mutableStateOf(false) }
     var showNewFile by remember { mutableStateOf(false) }
     var inputName by remember { mutableStateOf("") }
-    val upPath = upPathOf(path)
-    val shown = entries.filter { passesFilter(it, filter) }
-
-    LaunchedEffect(path, refreshToken, opts) {
-        if (path.isBlank()) return@LaunchedEffect
-        loading = true
-        error = null
-        val items = FileListing.list(context, path, opts)
-        loading = false
-        if (items == null) {
-            error = unreadableMessage(path)
-            entries = emptyList()
-        } else {
-            entries = items
-        }
-    }
+    val upPath = if (category == null) upPathOf(pane.path) else null
 
     Column(
         modifier = modifier
@@ -980,67 +905,84 @@ private fun FolderView(
             .clickable(enabled = compact) { onActivate() }
             .padding(if (compact) 8.dp else 12.dp),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            GlassChip(
-                text = "+ Folder",
-                onClick = {
-                    inputName = ""
-                    showNewFolder = true
-                },
-            )
-            GlassChip(text = "+ File", onClick = { showNewFile = true })
-        }
-
-        status?.let {
+        if (category == null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassChip(
+                    text = "+ Folder",
+                    onClick = {
+                        inputName = ""
+                        showNewFolder = true
+                    },
+                )
+                GlassChip(text = "+ File", onClick = { showNewFile = true })
+            }
+        } else {
             Text(
-                text = it,
-                style = MaterialTheme.typography.bodySmall,
+                text = if (data.loading) "Scanning internal storage…" else "${category.label}: ${data.entries.size} file(s)",
+                style = MaterialTheme.typography.labelMedium,
                 color = CronosCyan,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 8.dp),
             )
         }
-
         Spacer(Modifier.height(8.dp))
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            val error = data.error
             when {
-                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
-                }
                 error != null -> Column(
                     modifier = Modifier.fillMaxSize().padding(12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
                     Text(
-                        text = error ?: "",
+                        text = error,
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                         textAlign = TextAlign.Center,
                     )
-                    Spacer(Modifier.height(12.dp))
-                    SecondaryButton("Try again", onClick = { onChanged() })
+                }
+                data.loading && data.entries.isEmpty() -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
+                }
+                category != null && data.entries.isEmpty() -> Box(
+                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = category.emptyText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        textAlign = TextAlign.Center,
+                    )
                 }
                 else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                     if (upPath != null) {
                         item {
-                            UpRow(compact = compact, onClick = { onPath(upPath) })
+                            UpRow(compact = compact, onClick = { onNavigate(upPath) })
                         }
                     }
-                    itemsIndexed(shown, key = { _, item -> item.path }) { index, item ->
+                    itemsIndexed(data.entries, key = { _, item -> item.path }) { index, item ->
                         EntryRow(
                             item = item,
                             selecting = sel.selecting,
                             checked = item.path in sel.selected,
                             compact = compact,
-                            divider = index < shown.lastIndex,
+                            subtitle = when {
+                                category != null -> File(item.path).parent.orEmpty()
+                                item.directory -> "Folder"
+                                compact -> formatBytes(item.size)
+                                else -> "${formatBytes(item.size)} · ${formatTime(item.modified)}"
+                            },
+                            divider = index < data.entries.lastIndex,
                             onTap = {
                                 when {
                                     sel.selecting -> toggleSelect(sel, item.path)
-                                    item.directory -> onPath(item.path)
-                                    else -> openEntry(context, item, onOpenArchive) { status = it }
+                                    item.directory -> onNavigate(item.path)
+                                    else -> openFile(context, item, onOpenArchive, onMessage)
                                 }
                             },
                             onMore = { actionItem = item },
@@ -1085,8 +1027,7 @@ private fun FolderView(
                     text = "Copy",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        sel.batch = BatchClip(listOf(item.path), cut = false)
-                        status = "Copied ${item.name}. Tap Paste here in the folder you want."
+                        onClipboard(listOf(item.path), false)
                         actionItem = null
                     },
                 )
@@ -1095,21 +1036,22 @@ private fun FolderView(
                     text = "Move",
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
-                        sel.batch = BatchClip(listOf(item.path), cut = true)
-                        status = "Cut ${item.name}. Tap Paste here in the folder you want."
+                        onClipboard(listOf(item.path), true)
                         actionItem = null
                     },
                 )
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton(
-                    text = "Rename",
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        inputName = item.name
-                        renameItem = item
-                        actionItem = null
-                    },
-                )
+                if (category == null) {
+                    Spacer(Modifier.height(8.dp))
+                    SecondaryButton(
+                        text = "Rename",
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            inputName = item.name
+                            renameItem = item
+                            actionItem = null
+                        },
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 SecondaryButton(
                     text = "Delete",
@@ -1129,9 +1071,9 @@ private fun FolderView(
 
     if (showNewFile) {
         NewFileDialog(
-            dir = path,
+            dir = pane.path,
             onResult = {
-                status = it
+                onMessage(it)
                 onChanged()
             },
             onDismiss = { showNewFile = false },
@@ -1163,15 +1105,15 @@ private fun FolderView(
                         enabled = inputName.isNotBlank(),
                         onClick = {
                             val name = inputName.trim()
-                            val here = path
+                            val here = pane.path
                             showNewFolder = false
                             scope.launch {
                                 val result = withContext(Dispatchers.IO) {
                                     FileOperations.createFolder(File(here), name).map { it.name }
                                 }
                                 result
-                                    .onSuccess { status = "Created $it" }
-                                    .onFailure { status = it.message }
+                                    .onSuccess { onMessage("Created $it") }
+                                    .onFailure { onMessage(it.message ?: "Could not create the folder.") }
                                 onChanged()
                             }
                         },
@@ -1181,7 +1123,7 @@ private fun FolderView(
         }
     }
 
-    renameItem?.let { item ->
+    renameItem?.let { target ->
         Dialog(onDismissRequest = { renameItem = null }) {
             SolidDialogCard(glow = CronosCyan) {
                 Text("Rename", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
@@ -1206,15 +1148,14 @@ private fun FolderView(
                         enabled = inputName.isNotBlank(),
                         onClick = {
                             val name = inputName.trim()
-                            val target = item
                             renameItem = null
                             scope.launch {
                                 val result = withContext(Dispatchers.IO) {
                                     FileOperations.rename(File(target.path), name).map { it.name }
                                 }
                                 result
-                                    .onSuccess { status = "Renamed to $it" }
-                                    .onFailure { status = it.message }
+                                    .onSuccess { onMessage("Renamed to $it") }
+                                    .onFailure { onMessage(it.message ?: "Could not rename.") }
                                 onChanged()
                             }
                         },
@@ -1224,13 +1165,13 @@ private fun FolderView(
         }
     }
 
-    deleteItem?.let { item ->
+    deleteItem?.let { target ->
         Dialog(onDismissRequest = { deleteItem = null }) {
             SolidDialogCard(glow = Warning) {
                 Text("Delete?", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = if (item.directory) {
+                    text = if (target.directory) {
                         "The folder and everything inside it will be deleted permanently."
                     } else {
                         "The file will be deleted permanently."
@@ -1249,23 +1190,9 @@ private fun FolderView(
                         text = "Delete",
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            val target = item
+                            val path = target.path
                             deleteItem = null
-                            scope.launch {
-                                sel.progress = TransferProgress("Deleting", target.name, 0L, 0L, 0, 1)
-                                val result = withContext(Dispatchers.IO) {
-                                    FileTransfer.run(TransferKind.Delete, listOf(target.path), null) { p ->
-                                        scope.launch { sel.progress = p }
-                                    }
-                                }
-                                sel.progress = null
-                                result
-                                    .onSuccess { status = "Deleted ${target.name}" }
-                                    .onFailure { error ->
-                                        status = if (error is InterruptedException) "Delete cancelled." else error.message
-                                    }
-                                onChanged()
-                            }
+                            onDelete(listOf(path))
                         },
                     )
                 }
@@ -1273,143 +1200,190 @@ private fun FolderView(
         }
     }
 }
+/** The search panel: path jumps when the text starts with a slash, otherwise live file matches. */
 @Composable
-private fun UpRow(compact: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = if (compact) 8.dp else 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = Icons.Rounded.Upload,
-            contentDescription = null,
-            tint = TextSecondary,
-            modifier = Modifier.size(if (compact) 16.dp else 18.dp),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = "Up one folder",
-            style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
-            color = TextSecondary,
-        )
+private fun SearchPanel(
+    query: String,
+    results: List<FileItem>,
+    searching: Boolean,
+    suggestions: List<String>,
+    onPickPath: (String) -> Unit,
+    onPickItem: (FileItem) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val typed = query.trim()
+    Column(modifier = modifier.glassSurface(20.dp).padding(12.dp)) {
+        if (typed.startsWith("/")) {
+            Text(
+                text = "Jump to a folder",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+            val exact = File(typed).takeIf { it.isDirectory && insideRoot(it.absolutePath) }
+            if (exact != null) {
+                SearchRow(
+                    icon = Icons.Rounded.FolderOpen,
+                    title = "Go to ${exact.name}",
+                    subtitle = exact.absolutePath,
+                    onClick = { onPickPath(exact.absolutePath) },
+                )
+            }
+            suggestions.forEach { path ->
+                SearchRow(
+                    icon = Icons.Rounded.Folder,
+                    title = File(path).name,
+                    subtitle = path,
+                    onClick = { onPickPath(path) },
+                )
+            }
+            if (exact == null && suggestions.isEmpty()) {
+                Text(
+                    text = "No folder matches this path yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+        } else {
+            Text(
+                text = when {
+                    searching && results.isEmpty() -> "Searching internal storage…"
+                    searching -> "${results.size} match(es) so far…"
+                    results.isEmpty() -> "No matches for \"$typed\""
+                    else -> "${results.size} match(es)"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                items(results, key = { it.path }) { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onPickItem(item) }
+                            .padding(horizontal = 6.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FileThumb(item = item, size = 34.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = File(item.path).parent.orEmpty(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun EntryRow(
-    item: FileItem,
-    selecting: Boolean,
-    checked: Boolean,
-    compact: Boolean,
-    divider: Boolean,
-    onTap: () -> Unit,
-    onMore: () -> Unit,
-) {
-    val iconBox = if (compact) 28.dp else 40.dp
-    val iconSize = if (compact) 16.dp else 20.dp
-    val tint = if (item.directory) CronosCyan else Color(0xFF9CC7FF)
-    val background = if (item.directory) CronosCyan.copy(alpha = 0.14f) else CronosBlue.copy(alpha = 0.16f)
-    val icon: ImageVector = when {
-        item.directory -> Icons.Rounded.Folder
-        isArchive(item.name) -> Icons.Rounded.Archive
-        else -> Icons.Rounded.Description
-    }
-    val subtitle = when {
-        item.directory -> "Folder"
-        compact -> formatBytes(item.size)
-        else -> "${formatBytes(item.size)} · ${formatTime(item.modified)}"
-    }
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onTap)
-                .padding(horizontal = if (compact) 2.dp else 4.dp, vertical = if (compact) 8.dp else 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (selecting) {
-                Icon(
-                    imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                    contentDescription = null,
-                    tint = if (checked) CronosCyan else TextSecondary,
-                    modifier = Modifier.size(if (compact) 16.dp else 20.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-            }
-            Box(
-                modifier = Modifier
-                    .size(iconBox)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(background),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(iconSize))
-            }
-            Spacer(Modifier.width(if (compact) 8.dp else 12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.name,
-                    style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
-                    color = TextPrimary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (!selecting) {
-                if (!compact && item.directory) {
-                    Icon(
-                        imageVector = Icons.Rounded.ChevronRight,
-                        contentDescription = null,
-                        tint = TextSecondary.copy(alpha = 0.5f),
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                if (compact) {
-                    Box(
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .clickable(onClick = onMore),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.MoreVert,
-                            contentDescription = "File actions",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                } else {
-                    IconButton(onClick = onMore, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            imageVector = Icons.Rounded.MoreVert,
-                            contentDescription = "File actions",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
-            }
-        }
-        if (divider) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = if (compact) 36.dp else 56.dp)
-                    .height(1.dp)
-                    .background(Color.White.copy(alpha = 0.06f)),
+private fun SearchRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(imageVector = icon, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+@Composable
+private fun QuickJumpRow(selected: Category?, onJump: (Category?) -> Unit) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            GlassChip(text = "Internal", selected = selected == null, onClick = { onJump(null) })
+        }
+        items(Category.entries) { category ->
+            GlassChip(
+                text = category.label,
+                selected = selected == category,
+                onClick = { onJump(category) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchBar(query: String, onQuery: (String) -> Unit, onClear: () -> Unit) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQuery,
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        placeholder = { Text("Search files, or type / to jump to a folder", color = TextSecondary) },
+        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = CronosCyan) },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = onClear) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Clear search", tint = TextSecondary)
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun PathCard(title: String, storagePath: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassSurface(20.dp)
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Rounded.FolderOpen,
+                contentDescription = null,
+                tint = CronosCyan,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        StorageSpaceBar(path = storagePath)
     }
 }
 
@@ -1485,71 +1459,6 @@ private fun ModeSegment(label: String, selected: Boolean, modifier: Modifier, on
 }
 
 @Composable
-private fun QuickJumpRow(
-    activePath: String,
-    activeFilter: ListFilter,
-    onJump: (QuickJump) -> Unit,
-) {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(quickJumps()) { jump ->
-            GlassChip(
-                text = jump.label,
-                selected = activePath == jump.path && activeFilter == jump.filter,
-                onClick = { onJump(jump) },
-            )
-        }
-    }
-}
-
-@Composable
-private fun SearchBar(query: String, onQuery: (String) -> Unit, onClear: () -> Unit) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQuery,
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        placeholder = { Text("Search files, or type / to jump to a path", color = TextSecondary) },
-        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = CronosCyan) },
-        trailingIcon = {
-            if (query.isNotEmpty()) {
-                IconButton(onClick = onClear) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Clear search", tint = TextSecondary)
-                }
-            }
-        },
-    )
-}
-
-@Composable
-private fun PathCard(path: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .glassSurface(20.dp)
-            .padding(14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.Rounded.FolderOpen,
-                contentDescription = null,
-                tint = CronosCyan,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = path,
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Spacer(Modifier.height(10.dp))
-        StorageSpaceBar(path = path)
-    }
-}
-@Composable
 private fun BatchPill(batch: BatchState, onClick: () -> Unit) {
     Row(
         modifier = Modifier
@@ -1609,7 +1518,6 @@ private fun PermissionCard(onAllow: () -> Unit) {
         }
     }
 }
-
 /** The progress box shown while files are copied, moved or deleted. It can be cancelled. */
 @Composable
 private fun TransferBar(p: TransferProgress, onCancel: () -> Unit) {
@@ -1661,56 +1569,13 @@ private fun TransferBar(p: TransferProgress, onCancel: () -> Unit) {
     }
 }
 
-@Composable
-private fun SelectionDock(
-    count: Int,
-    archiveCount: Int,
-    onSelectAll: () -> Unit,
-    onCopy: () -> Unit,
-    onMove: () -> Unit,
-    onDelete: () -> Unit,
-    onExtract: () -> Unit,
-    onZip: () -> Unit,
-    onDone: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .glassSurface(26.dp)
-            .padding(14.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "$count selected",
-                style = MaterialTheme.typography.titleSmall,
-                color = TextPrimary,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "Done",
-                style = MaterialTheme.typography.labelLarge,
-                color = CronosCyan,
-                modifier = Modifier.clickable(onClick = onDone).padding(4.dp),
-            )
-        }
-        Spacer(Modifier.height(10.dp))
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { GlassChip(text = "Select all", onClick = onSelectAll) }
-            item { GlassChip(text = "Copy", selected = count > 0, onClick = onCopy) }
-            item { GlassChip(text = "Move", onClick = onMove) }
-            item { GlassChip(text = "Zip", selected = count > 0, onClick = onZip) }
-            item { GlassChip(text = "Extract", selected = archiveCount > 0, onClick = onExtract) }
-            item { GlassChip(text = "Delete", onClick = onDelete) }
-        }
-    }
-}
-
-/** The bar that appears when items are waiting to be copied or moved. Paste and Cancel are always here. */
+/** The bar that appears when items are waiting for a Paste. Paste and Cancel are always visible. */
 @Composable
 private fun PasteBar(
     count: Int,
     cut: Boolean,
     destination: String,
+    canPaste: Boolean,
     onPaste: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -1739,8 +1604,61 @@ private fun PasteBar(
             PrimaryButton(
                 text = if (cut) "Move here" else "Paste here",
                 modifier = Modifier.weight(1f),
+                enabled = canPaste,
                 onClick = onPaste,
             )
+        }
+    }
+}
+
+/** The bar shown in select mode. In split view, Copy and Move send the picks to the other pane. */
+@Composable
+private fun SelectionDock(
+    count: Int,
+    archiveCount: Int,
+    split: Boolean,
+    sideLabel: String,
+    onSelectAll: () -> Unit,
+    onCopy: () -> Unit,
+    onMove: () -> Unit,
+    onZip: () -> Unit,
+    onExtract: () -> Unit,
+    onDelete: () -> Unit,
+    onDone: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassSurface(26.dp)
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "$count selected",
+                style = MaterialTheme.typography.titleSmall,
+                color = TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "Done",
+                style = MaterialTheme.typography.labelLarge,
+                color = CronosCyan,
+                modifier = Modifier.clickable(onClick = onDone).padding(4.dp),
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { GlassChip(text = "Select all", onClick = onSelectAll) }
+            if (split) {
+                item { GlassChip(text = "Copy to $sideLabel", selected = count > 0, onClick = onCopy) }
+                item { GlassChip(text = "Move to $sideLabel", onClick = onMove) }
+            } else {
+                item { GlassChip(text = "Copy", selected = count > 0, onClick = onCopy) }
+                item { GlassChip(text = "Move", onClick = onMove) }
+            }
+            item { GlassChip(text = "Zip", selected = count > 0, onClick = onZip) }
+            item { GlassChip(text = "Extract", selected = archiveCount > 0, onClick = onExtract) }
+            item { GlassChip(text = "Delete", onClick = onDelete) }
         }
     }
 }
@@ -1855,69 +1773,124 @@ private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
         }
     }
 }
+
 @Composable
-private fun InfoDialog(item: FileItem, onDismiss: () -> Unit) {
-    val details by produceState<FileDetails?>(initialValue = null, item.path) {
-        value = withContext(Dispatchers.IO) { FileTools.details(item.path) }
+private fun UpRow(compact: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = if (compact) 8.dp else 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Upload,
+            contentDescription = null,
+            tint = TextSecondary,
+            modifier = Modifier.size(if (compact) 16.dp else 18.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = "Up one folder",
+            style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
+            color = TextSecondary,
+        )
     }
-    val d = details
-    val sizeText = when {
-        d != null -> formatBytes(d.size)
-        item.directory -> "Calculating…"
-        else -> formatBytes(item.size)
-    }
-    val typeText = when {
-        item.directory -> "Folder"
-        FileOpener.mimeFor(item.name) == "*/*" -> "File"
-        else -> FileOpener.mimeFor(item.name)
-    }
-    Dialog(onDismissRequest = onDismiss) {
-        SolidDialogCard(glow = CronosCyan) {
-            Text("Info", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = item.name,
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(12.dp))
-            InfoRow("Type", typeText)
-            InfoRow("Size", sizeText)
-            if (d != null && d.isDirectory) InfoRow("Items inside", "${d.items} (direct)")
-            InfoRow("Modified", formatTime(d?.modified ?: item.modified))
-            InfoRow("Hidden", yesNo(d?.hidden ?: item.name.startsWith(".")))
-            if (d != null) {
-                InfoRow("Can read", yesNo(d.readable))
-                InfoRow("Can write", yesNo(d.writable))
+}
+
+@Composable
+private fun EntryRow(
+    item: FileItem,
+    selecting: Boolean,
+    checked: Boolean,
+    compact: Boolean,
+    subtitle: String,
+    divider: Boolean,
+    onTap: () -> Unit,
+    onMore: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onTap)
+                .padding(horizontal = if (compact) 2.dp else 4.dp, vertical = if (compact) 8.dp else 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (selecting) {
+                Icon(
+                    imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                    contentDescription = null,
+                    tint = if (checked) CronosCyan else TextSecondary,
+                    modifier = Modifier.size(if (compact) 16.dp else 20.dp),
+                )
+                Spacer(Modifier.width(6.dp))
             }
-            Spacer(Modifier.height(8.dp))
-            Text("Location", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-            Text(
-                text = d?.path ?: item.path,
-                style = MaterialTheme.typography.bodySmall,
-                color = TextPrimary,
+            FileThumb(item = item, size = if (compact) 30.dp else 40.dp)
+            Spacer(Modifier.width(if (compact) 8.dp else 12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.name,
+                    style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
+                    color = TextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (!selecting) {
+                if (!compact && item.directory) {
+                    Icon(
+                        imageVector = Icons.Rounded.ChevronRight,
+                        contentDescription = null,
+                        tint = TextSecondary.copy(alpha = 0.5f),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                if (compact) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onMore),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "File actions",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                } else {
+                    IconButton(onClick = onMore, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "File actions",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        }
+        if (divider) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = if (compact) 36.dp else 56.dp)
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.06f)),
             )
-            Spacer(Modifier.height(16.dp))
-            SecondaryButton(text = "Close", modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
         }
     }
 }
-
-@Composable
-private fun InfoRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text = label, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.weight(1f))
-        Spacer(Modifier.width(10.dp))
-        Text(text = value, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-    }
-}
-
-private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
 
 @Composable
 private fun NewFileDialog(
@@ -2075,3 +2048,67 @@ private fun BatchRow(item: BatchItem) {
         }
     }
 }
+
+@Composable
+private fun InfoDialog(item: FileItem, onDismiss: () -> Unit) {
+    val details by produceState<FileDetails?>(initialValue = null, item.path) {
+        value = withContext(Dispatchers.IO) { FileTools.details(item.path) }
+    }
+    val d = details
+    val sizeText = when {
+        d != null -> formatBytes(d.size)
+        item.directory -> "Calculating…"
+        else -> formatBytes(item.size)
+    }
+    val typeText = when {
+        item.directory -> "Folder"
+        FileOpener.mimeFor(item.name) == "*/*" -> "File"
+        else -> FileOpener.mimeFor(item.name)
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("Info", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = item.name,
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(12.dp))
+            InfoRow("Type", typeText)
+            InfoRow("Size", sizeText)
+            if (d != null && d.isDirectory) InfoRow("Items inside", "${d.items} (direct)")
+            InfoRow("Modified", formatTime(d?.modified ?: item.modified))
+            InfoRow("Hidden", yesNo(d?.hidden ?: item.name.startsWith(".")))
+            if (d != null) {
+                InfoRow("Can read", yesNo(d.readable))
+                InfoRow("Can write", yesNo(d.writable))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Location", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+            Text(
+                text = d?.path ?: item.path,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(16.dp))
+            SecondaryButton(text = "Close", modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = label, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(10.dp))
+        Text(text = value, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+    }
+}
+
+private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
