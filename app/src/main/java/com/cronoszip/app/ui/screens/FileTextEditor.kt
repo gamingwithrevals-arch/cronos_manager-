@@ -2,7 +2,9 @@ package com.cronoszip.app.ui.screens
 
 import android.content.Context
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,10 +13,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -36,13 +36,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.cronoszip.app.data.AppPrefs
 import com.cronoszip.app.data.FileItem
 import com.cronoszip.app.data.SafStorage
@@ -91,8 +90,10 @@ private fun writeEditableText(context: Context, item: FileItem, content: String)
 }
 
 /**
- * Full-screen text and config editor. Its header stays at the top, the text area shrinks to fit,
- * and the Cancel and Save buttons always stay above the navigation bar and the keyboard.
+ * Full-screen text and config editor. It is drawn in the main window, not in a Dialog, so the
+ * status bar, navigation bar and keyboard are handled the same way as the rest of the app.
+ * The header stays at the top, the text area shrinks to fit, and the Cancel and Save buttons
+ * always stay visible above the bottom bars and the keyboard.
  */
 @Composable
 fun FileTextEditor(
@@ -108,6 +109,11 @@ fun FileTextEditor(
     var saving by remember(item.path) { mutableStateOf(false) }
     var loadError by remember(item.path) { mutableStateOf<String?>(null) }
 
+    // The Android back button closes the editor first, before it reaches the file manager.
+    BackHandler(enabled = true) {
+        if (!saving) onDismiss()
+    }
+
     LaunchedEffect(item.path) {
         loading = true
         loadError = null
@@ -118,111 +124,108 @@ fun FileTextEditor(
         loading = false
     }
 
-    Dialog(
-        onDismissRequest = { if (!saving) onDismiss() },
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(if (AppPrefs.amoled) Color.Black else Color(0xFF07101E))
+            .pointerInput(Unit) {
+                // Swallows taps on the empty background so they never reach the file list behind.
+                detectTapGestures(onTap = { })
+            }
+            .safeDrawingPadding()
+            .padding(16.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(if (AppPrefs.amoled) Color.Black else Color(0xFF07101E))
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(16.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "TEXT & CONFIG EDITOR",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CronosCyan,
+                    letterSpacing = 1.2.sp,
+                )
+                Text(
+                    text = item.name,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = { if (!saving) onDismiss() }) {
+                Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextPrimary)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .liquidGlass(20.dp)
+                .padding(12.dp),
+        ) {
+            when {
+                loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
+                }
+                loadError != null -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "TEXT & CONFIG EDITOR",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CronosCyan,
-                        letterSpacing = 1.2.sp,
+                        text = loadError.orEmpty(),
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodyMedium,
                     )
-                    Text(
-                        text = item.name,
-                        style = MaterialTheme.typography.titleLarge,
+                }
+                else -> BasicTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState()),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                IconButton(onClick = { if (!saving) onDismiss() }) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextPrimary)
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .liquidGlass(20.dp)
-                    .padding(12.dp),
-            ) {
-                when {
-                    loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
-                    }
-                    loadError != null -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = loadError.orEmpty(),
-                            color = TextSecondary,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                    else -> BasicTextField(
-                        value = text,
-                        onValueChange = { text = it },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState()),
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
-                            color = TextPrimary,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp,
-                            lineHeight = 19.sp,
-                        ),
-                        cursorBrush = SolidColor(CronosCyan),
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                SecondaryButton(
-                    text = "Cancel",
-                    modifier = Modifier.weight(1f),
-                    onClick = { if (!saving) onDismiss() },
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                    ),
+                    cursorBrush = SolidColor(CronosCyan),
                 )
-                PrimaryButton(
-                    text = if (saving) "Saving…" else "Save changes",
-                    modifier = Modifier.weight(1f),
-                    enabled = !loading && !saving && loadError == null,
-                    onClick = {
-                        saving = true
-                        val updated = text
-                        scope.launch {
-                            val result = withContext(Dispatchers.IO) {
-                                writeEditableText(context, item, updated)
-                            }
-                            saving = false
-                            result
-                                .onSuccess {
-                                    onSaved()
-                                    onDismiss()
-                                }
-                                .onFailure { onError(it.message ?: "Could not save changes.") }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SecondaryButton(
+                text = "Cancel",
+                modifier = Modifier.weight(1f),
+                onClick = { if (!saving) onDismiss() },
+            )
+            PrimaryButton(
+                text = if (saving) "Saving…" else "Save changes",
+                modifier = Modifier.weight(1f),
+                enabled = !loading && !saving && loadError == null,
+                onClick = {
+                    saving = true
+                    val updated = text
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            writeEditableText(context, item, updated)
                         }
-                    },
-                )
-            }
+                        saving = false
+                        result
+                            .onSuccess {
+                                onSaved()
+                                onDismiss()
+                            }
+                            .onFailure { onError(it.message ?: "Could not save changes.") }
+                    }
+                },
+            )
         }
     }
 }
