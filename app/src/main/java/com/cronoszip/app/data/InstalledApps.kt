@@ -5,10 +5,11 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Environment
+import android.util.LruCache
+import androidx.core.graphics.drawable.toBitmap
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -42,12 +43,19 @@ data class AppExtraction(val folder: String, val files: Int, val bytes: Long)
 object InstalledApps {
     private const val OUTPUT_FOLDER = "Chronos Apps"
     private const val BUFFER_SIZE = 256 * 1024
+    private val iconCache = object : LruCache<String, Bitmap>(128) {}
 
     fun list(context: Context): List<InstalledApp> {
         val pm = context.packageManager
-        @Suppress("DEPRECATION")
-        val packages = pm.getInstalledPackages(PackageManager.GET_META_DATA)
-        return packages.mapNotNull { toApp(pm, it) }.sortedBy { it.label.lowercase() }
+        val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(0L))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getInstalledPackages(0)
+        }
+
+        return packages.mapNotNull { toApp(pm, it) }
+            .sortedBy { it.label.lowercase() }
     }
 
     private fun toApp(pm: PackageManager, pkg: PackageInfo): InstalledApp? {
@@ -55,12 +63,17 @@ object InstalledApps {
         val source: String = info.sourceDir ?: return null
         val paths = mutableListOf(source)
         info.splitSourceDirs?.forEach { paths.add(it) }
+
+        val isSystemApp = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+        val isUpdatedSystemApp = (info.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+        val isUserApp = !isSystemApp || isUpdatedSystemApp
+
         return InstalledApp(
             packageName = info.packageName,
             label = pm.getApplicationLabel(info).toString(),
             versionName = pkg.versionName.orEmpty(),
             versionCode = versionCodeOf(pkg),
-            isSystem = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
+            isSystem = !isUserApp,
             installTime = pkg.firstInstallTime,
             updateTime = pkg.lastUpdateTime,
             sourcePaths = paths,
@@ -141,12 +154,36 @@ object InstalledApps {
     }
 
     /** The app icon drawn into a square bitmap of [px] pixels, or null when it can't be read. */
-    fun icon(context: Context, packageName: String, px: Int): Bitmap? = runCatching {
-        val drawable: Drawable = context.packageManager.getApplicationIcon(packageName)
-        val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        drawable.setBounds(0, 0, px, px)
-        drawable.draw(canvas)
-        bitmap
-    }.getOrNull()
+    fun icon(context: Context, packageName: String, px: Int): Bitmap? {
+        val cacheKey = "$packageName:$px"
+        iconCache.get(cacheKey)?.let { return it }
+
+        val pm = context.packageManager
+        val appInfo = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0L))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getApplicationInfo(packageName, 0)
+            }
+        } catch (_: PackageManager.NameNotFoundException) {
+            return null
+        }
+
+        val drawable: Drawable = try {
+            appInfo.loadIcon(pm)
+        } catch (_: Exception) {
+            return null
+        }
+
+        val bitmap = try {
+            drawable.toBitmap(px, px)
+        } catch (_: Exception) {
+            return null
+        }
+
+        val cached = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        iconCache.put(cacheKey, cached)
+        return cached
+    }
 }

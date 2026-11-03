@@ -1,5 +1,6 @@
 package com.cronoszip.app.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -28,6 +30,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.cronoszip.app.data.AppExtraction
@@ -123,13 +126,29 @@ fun InstalledAppsScreen(onClose: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(visibleApps, key = { it.packageName }) { app ->
+                    val iconBitmap = remember(app.packageName) { InstalledApps.icon(context, app.packageName, 96) }
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            if (iconBitmap != null) {
+                                Image(
+                                    bitmap = iconBitmap.asImageBitmap(),
+                                    contentDescription = app.label,
+                                    modifier = Modifier.size(40.dp),
+                                )
+                            } else {
+                                Column(
+                                    modifier = Modifier.size(40.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Text(app.label.firstOrNull()?.uppercaseChar()?.toString() ?: "?")
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(app.label, style = MaterialTheme.typography.titleMedium)
                                 Text(
                                     "${app.versionName.ifBlank { "Unknown version" }} · ${if (app.isSplit) "Split APK" else "APK"}",
