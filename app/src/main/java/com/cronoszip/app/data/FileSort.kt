@@ -1,29 +1,43 @@
 package com.cronoszip.app.data
 
 /**
- * The one sort used by every file list. Folders always come first. Within folders and within files
- * the chosen key orders the items, and natural name order breaks ties. Descending reverses the
- * whole ordering of each group, so folders stay on top in both directions.
+ * The one sort used by every file list. Folders always come first.
+ * - When sorting by Name or Date, both folders and files follow the ascending/descending direction.
+ * - When sorting by Size or Type, folders stay cleanly ordered A-Z at the top while files sort by
+ *   their actual byte size or file extension (with A-Z tie-breaking).
  */
 object FileSort {
     fun sort(items: List<FileItem>, mode: SortMode, descending: Boolean): List<FileItem> {
         val folders = items.filter { it.directory }
         val files = items.filter { !it.directory }
-        val folderOrder = orderFor(mode, folder = true)
-        val fileOrder = orderFor(mode, folder = false)
-        val folderComparator = if (descending) folderOrder.reversed() else folderOrder
-        val fileComparator = if (descending) fileOrder.reversed() else fileOrder
-        return folders.sortedWith(folderComparator) + files.sortedWith(fileComparator)
-    }
 
-    /** Folders sort by name, or by date when the mode is Date. Their size is meaningless, so Size uses name. */
-    private fun orderFor(mode: SortMode, folder: Boolean): Comparator<FileItem> = when {
-        folder && mode == SortMode.Date -> byDate.then(byName)
-        folder -> byName
-        mode == SortMode.Name -> byName
-        mode == SortMode.Size -> bySize.then(byName)
-        mode == SortMode.Date -> byDate.then(byName)
-        else -> byType.then(byName)
+        val folderComparator: Comparator<FileItem> = when (mode) {
+            SortMode.Name -> if (descending) byName.reversed() else byName
+            SortMode.Date -> {
+                val primary = if (descending) byDate.reversed() else byDate
+                primary.then(byName)
+            }
+            // Folders don't have meaningful byte size or file extensions, so keep them A-Z at top
+            SortMode.Size, SortMode.Type -> byName
+        }
+
+        val fileComparator: Comparator<FileItem> = when (mode) {
+            SortMode.Name -> if (descending) byName.reversed() else byName
+            SortMode.Size -> {
+                val primary = if (descending) bySize.reversed() else bySize
+                primary.then(byName)
+            }
+            SortMode.Date -> {
+                val primary = if (descending) byDate.reversed() else byDate
+                primary.then(byName)
+            }
+            SortMode.Type -> {
+                val primary = if (descending) byType.reversed() else byType
+                primary.then(byName)
+            }
+        }
+
+        return folders.sortedWith(folderComparator) + files.sortedWith(fileComparator)
     }
 
     private val byName = Comparator<FileItem> { a, b -> naturalCompare(a.name, b.name) }
@@ -33,7 +47,9 @@ object FileSort {
     private val byDate = Comparator<FileItem> { a, b -> java.lang.Long.compare(a.modified, b.modified) }
 
     private val byType = Comparator<FileItem> { a, b ->
-        naturalCompare(a.name.substringAfterLast('.', ""), b.name.substringAfterLast('.', ""))
+        val extA = a.name.substringAfterLast('.', "").lowercase()
+        val extB = b.name.substringAfterLast('.', "").lowercase()
+        naturalCompare(extA, extB)
     }
 
     /**
