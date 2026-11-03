@@ -35,6 +35,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
@@ -514,7 +515,8 @@ private fun Modifier.glassSurface(radius: Dp = 22.dp): Modifier = this
     .clip(RoundedCornerShape(radius))
     .background(if (AppPrefs.amoled) Color.Black else GlassWhite.copy(alpha = 0.05f))
     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(radius))
-    @Composable
+
+@Composable
 fun FileManagerScreen(
     viewModel: CronosViewModel,
     onBack: (() -> Unit)?,
@@ -586,6 +588,7 @@ fun FileManagerScreen(
         activePane.category = category
         activePane.path = root
         query = ""
+        message = null
         sel.selected.clear()
     }
 
@@ -594,6 +597,7 @@ fun FileManagerScreen(
         activePane.category = null
         activePane.path = SafTree.rootDocumentUri(uri).toString()
         query = ""
+        message = null
         sel.selected.clear()
     }
 
@@ -728,7 +732,6 @@ fun FileManagerScreen(
                 MountStore.add(context, uri)
                 mounts = MountStore.list(context)
                 openMount(uri)
-                message = "Mounted ${mountLabelOf(context, uri)}."
             } else {
                 message = "This storage could not be granted permission."
             }
@@ -823,7 +826,8 @@ fun FileManagerScreen(
             }
         }
     }
-        val internalSelected = activePane.category == null && activeMount == null && !SafStorage.isSaf(activePane.path)
+
+    val internalSelected = activePane.category == null && activeMount == null && !SafStorage.isSaf(activePane.path)
     val typeChips = listOf(FilesChipSpec("Internal", internalSelected) { jump(null) }) +
         Category.entries.map { category ->
             FilesChipSpec(category.label, activePane.category == category) { jump(category) }
@@ -833,7 +837,9 @@ fun FileManagerScreen(
     } + listOf(
         FilesChipSpec("+ Add storage", false) { mountLauncher.launch(null) },
         FilesChipSpec("Installed apps", false) { showApps = true },
-    )
+    ) + (activeMount?.let { uri ->
+        listOf(FilesChipSpec("× Remove storage", false) { removeMount(uri) })
+    } ?: emptyList())
     val upA: String? = if (paneA.category == null) upTargetOf(paneA) else null
     val upB: String? = if (paneB.category == null) upTargetOf(paneB) else null
 
@@ -844,28 +850,24 @@ fun FileManagerScreen(
             .padding(horizontal = 16.dp),
     ) {
         TopBar(title = "Files", onMore = { showOptions = true })
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(4.dp))
 
         ModeSwitch(split = split, onChange = {
             split = it
             activeIndex = 0
         })
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(4.dp))
 
         FilesSectionLabel("File types")
         FilesChipStrip(typeChips)
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(4.dp))
 
         FilesSectionLabel("Storage apps")
         FilesChipStrip(storageChips)
-        activeMount?.let { uri ->
-            Spacer(Modifier.height(8.dp))
-            FilesChipStrip(listOf(FilesChipSpec("Remove this storage", false) { removeMount(uri) }))
-        }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(4.dp))
 
         SearchBar(query = query, onQuery = { query = it }, onClear = { query = "" })
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
 
         if (granted) {
             PathCard(
@@ -873,12 +875,12 @@ fun FileManagerScreen(
                     ?: pathTitle(context, activePane.path),
                 storagePath = root,
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(6.dp))
         }
 
         if (batch.items.isNotEmpty()) {
             BatchPill(batch = batch, onClick = { showBatch = true })
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(6.dp))
         }
 
         message?.let {
@@ -886,7 +888,7 @@ fun FileManagerScreen(
                 text = it,
                 style = MaterialTheme.typography.bodySmall,
                 color = CronosCyan,
-                modifier = Modifier.padding(bottom = 8.dp),
+                modifier = Modifier.padding(bottom = 6.dp),
             )
         }
 
@@ -1055,7 +1057,8 @@ fun FileManagerScreen(
         }
         Spacer(Modifier.height(12.dp))
     }
-        if (showOptions) {
+
+    if (showOptions) {
         OptionsDialog(
             showHidden = showHidden,
             onHidden = { showHidden = it },
@@ -1179,6 +1182,7 @@ fun FileManagerScreen(
         }
     }
 }
+
 /** One browsing pane: its rows, the item menus, and the folder, file, rename and delete dialogs. */
 @Composable
 private fun PaneView(
@@ -1530,6 +1534,7 @@ private fun PaneView(
         }
     }
 }
+
 /** The search panel: path jumps when the text starts with a slash, otherwise live file matches. */
 @Composable
 private fun SearchPanel(
@@ -1660,7 +1665,7 @@ private fun FilesSectionLabel(text: String) {
         style = MaterialTheme.typography.labelSmall,
         color = TextSecondary,
         letterSpacing = 1.2.sp,
-        modifier = Modifier.padding(bottom = 6.dp),
+        modifier = Modifier.padding(bottom = 4.dp),
     )
 }
 
@@ -1676,21 +1681,62 @@ private fun FilesChipStrip(chips: List<FilesChipSpec>) {
 
 @Composable
 private fun SearchBar(query: String, onQuery: (String) -> Unit, onClear: () -> Unit) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQuery,
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        placeholder = { Text("Search files, or type / to jump to a folder", color = TextSecondary) },
-        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = CronosCyan) },
-        trailingIcon = {
-            if (query.isNotEmpty()) {
-                IconButton(onClick = onClear) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Clear search", tint = TextSecondary)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .clip(RoundedCornerShape(50))
+            .background(GlassWhite.copy(alpha = 0.05f))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
+            .padding(start = 12.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Rounded.Search,
+            contentDescription = null,
+            tint = CronosCyan,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        BasicTextField(
+            value = query,
+            onValueChange = onQuery,
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            maxLines = 1,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = 14.sp,
+                color = TextPrimary,
+            ),
+            decorationBox = { innerTextField ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (query.isEmpty()) {
+                        Text(
+                            text = "Search or type / for path...",
+                            color = TextSecondary,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    innerTextField()
                 }
+            },
+        )
+        if (query.isNotEmpty()) {
+            IconButton(
+                onClick = onClear,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "Clear search",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(18.dp),
+                )
             }
-        },
-    )
+        }
+    }
 }
 
 @Composable
@@ -1698,27 +1744,27 @@ private fun PathCard(title: String, storagePath: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .glassSurface(20.dp)
-            .padding(14.dp),
+            .glassSurface(14.dp)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = Icons.Rounded.FolderOpen,
                 contentDescription = null,
                 tint = CronosCyan,
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(16.dp),
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(7.dp))
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.labelLarge,
                 color = TextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(4.dp))
         StorageSpaceBar(path = storagePath)
     }
 }
@@ -1854,6 +1900,7 @@ private fun PermissionCard(onAllow: () -> Unit) {
         }
     }
 }
+
 /** The progress box shown while files are copied, moved or deleted. It can be cancelled. */
 @Composable
 private fun TransferBar(p: TransferProgress, onCancel: () -> Unit) {
@@ -1998,6 +2045,7 @@ private fun SelectionDock(
         }
     }
 }
+
 @Composable
 private fun OptionsDialog(
     showHidden: Boolean,
@@ -2226,6 +2274,7 @@ private fun EntryRow(
         }
     }
 }
+
 @Composable
 private fun NewFileDialog(
     dir: String,
