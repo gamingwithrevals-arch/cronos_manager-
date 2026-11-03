@@ -13,11 +13,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Photo
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -59,7 +60,7 @@ private fun thumbKindOf(item: FileItem): ThumbKind {
 
 private fun iconFor(item: FileItem, kind: ThumbKind): ImageVector = when {
     item.directory -> Icons.Rounded.Folder
-    kind == ThumbKind.Image -> Icons.Rounded.Image
+    kind == ThumbKind.Image -> Icons.Rounded.Photo
     kind == ThumbKind.Video -> Icons.Rounded.Movie
     isArchive(item.name) -> Icons.Rounded.Archive
     item.name.substringAfterLast('.', "").lowercase() in audioExtensions -> Icons.Rounded.Audiotrack
