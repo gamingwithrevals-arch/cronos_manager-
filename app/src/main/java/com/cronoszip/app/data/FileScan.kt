@@ -11,41 +11,42 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 
 /**
- * Walks internal storage and streams the files that match. Results arrive while the walk runs,
- * so the screen shows matches as they are found instead of waiting for the whole walk.
+ * Searches storage breadth-first: the shallow folders people use most (DCIM, Pictures, Download)
+ * are checked before deep folder trees. Matches stream out while the walk runs.
  */
 object FileScan {
-    private const val MAX_RESULTS = 2000
-    private const val TIME_BUDGET_MS = 20_000L
-    private const val EMIT_EVERY_MS = 250L
+    private const val MAX_RESULTS = 5000
+    private const val EMIT_EVERY_MS = 300L
+
+    /** Android's private app folders. Android blocks reading them anyway, so the walk skips them. */
+    private val skippedInsideAndroid = setOf("data", "obb")
 
     fun find(root: File, match: (File) -> Boolean): Flow<List<FileItem>> = flow {
         val found = ArrayList<FileItem>()
-        val started = System.currentTimeMillis()
-        var lastEmit = started
-        val pending = ArrayDeque<File>()
-        pending.add(root)
-        while (pending.isNotEmpty()) {
+        var lastEmit = System.currentTimeMillis()
+        val queue = ArrayDeque<File>()
+        queue.addLast(root)
+        while (queue.isNotEmpty()) {
             currentCoroutineContext().ensureActive()
-            if (found.size >= MAX_RESULTS) break
-            if (System.currentTimeMillis() - started > TIME_BUDGET_MS) break
-            val dir = pending.removeLast()
+            val dir = queue.removeFirst()
             val children = dir.listFiles() ?: continue
             for (child in children) {
                 if (child.name.startsWith(".")) continue
                 if (Files.isSymbolicLink(child.toPath())) continue
-                if (child.isDirectory) {
-                    if (dir == root && child.name == "Android") continue
-                    pending.add(child)
+                if (child.isDirectory && !(dir.name == "Android" && child.name in skippedInsideAndroid)) {
+                    queue.addLast(child)
                 }
-                if (match(child)) found.add(toItem(child))
-                if (found.size >= MAX_RESULTS) break
+                if (match(child)) {
+                    found.add(toItem(child))
+                    if (found.size >= MAX_RESULTS) break
+                }
             }
             val now = System.currentTimeMillis()
             if (now - lastEmit >= EMIT_EVERY_MS) {
                 emit(found.toList())
                 lastEmit = now
             }
+            if (found.size >= MAX_RESULTS) break
         }
         emit(found.toList())
     }.flowOn(Dispatchers.IO)
