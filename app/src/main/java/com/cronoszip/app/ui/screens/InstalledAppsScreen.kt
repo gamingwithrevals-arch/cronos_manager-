@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -65,6 +66,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private val NormalBgGradient = Brush.verticalGradient(
+    colors = listOf(
+        Color(0xFF07101E),
+        Color(0xFF0A1628),
+        Color(0xFF060D1A),
+    ),
+)
+
+private fun Modifier.appScreenBackground(): Modifier =
+    if (AppPrefs.amoled) {
+        this.background(Color.Black)
+    } else {
+        this.background(NormalBgGradient)
+    }
 
 private fun Modifier.appGlassSurface(radius: Dp = 20.dp): Modifier = this
     .clip(RoundedCornerShape(radius))
@@ -114,7 +130,7 @@ fun InstalledAppsScreen(onClose: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .appScreenBackground()
             .safeDrawingPadding()
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
@@ -332,8 +348,11 @@ fun InstalledAppsScreen(onClose: () -> Unit) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(16.dp))
-                                .background(GlassWhite.copy(alpha = 0.035f))
-                                .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                                .background(
+                                    if (AppPrefs.amoled) GlassWhite.copy(alpha = 0.035f)
+                                    else GlassWhite.copy(alpha = 0.055f)
+                                )
+                                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
