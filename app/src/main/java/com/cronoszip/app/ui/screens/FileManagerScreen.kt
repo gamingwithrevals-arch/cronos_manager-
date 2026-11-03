@@ -3,8 +3,11 @@ package com.cronoszip.app.ui.screens
 import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -99,6 +102,9 @@ import com.cronoszip.app.data.FileSort
 import com.cronoszip.app.data.FileTools
 import com.cronoszip.app.data.FileTransfer
 import com.cronoszip.app.data.ListOptions
+import com.cronoszip.app.data.PinnedStorage
+import com.cronoszip.app.data.SafStorage
+import com.cronoszip.app.data.SafTree
 import com.cronoszip.app.data.SortMode
 import com.cronoszip.app.data.TransferKind
 import com.cronoszip.app.data.TransferProgress
@@ -143,7 +149,7 @@ private enum class Category(val label: String, val extensions: Set<String>, val 
     Compress("Compress", setOf("zip", "7z", "tar", "gz", "tgz", "rar", "xz"), "No compressed files found in internal storage.")
 }
 
-/** What one pane shows: a folder, or a category when [category] is set. */
+/** What one pane shows: a folder (a local path or a mounted document URI), or a category. */
 private class PaneState(initialPath: String) {
     var path by mutableStateOf(initialPath)
     var category by mutableStateOf<Category?>(null)
@@ -170,7 +176,36 @@ private data class Clip(val paths: List<String>, val cut: Boolean)
 /** A copy or move that is waiting on the conflict dialog. */
 private data class PendingTransfer(val paths: List<String>, val cut: Boolean, val dest: String, val names: List<String>)
 
-/** Internal storage root. Navigation never goes above this folder. */
+/**
+ * The storage trees the user added with the system folder picker. The app keeps the permission,
+ * so these come back after a restart.
+ */
+private object MountStore {
+    private const val PREFS = "cronoszip.mounts"
+    private const val KEY = "trees"
+    private const val GRANT_FLAGS = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
+    private fun prefs(context: Context) =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    fun list(context: Context): List<Uri> =
+        prefs(context).getStringSet(KEY, emptySet()).orEmpty().sorted().map { Uri.parse(it) }
+
+    fun add(context: Context, uri: Uri) {
+        val updated = prefs(context).getStringSet(KEY, emptySet()).orEmpty().toMutableSet()
+        updated.add(uri.toString())
+        prefs(context).edit().putStringSet(KEY, updated).apply()
+    }
+
+    fun remove(context: Context, uri: Uri) {
+        val updated = prefs(context).getStringSet(KEY, emptySet()).orEmpty().toMutableSet()
+        updated.remove(uri.toString())
+        prefs(context).edit().putStringSet(KEY, updated).apply()
+        runCatching { context.contentResolver.releasePersistableUriPermission(uri, GRANT_FLAGS) }
+    }
+}
+
+/** Internal storage root. Navigation of phone storage never goes above this folder. */
 private fun internalRoot(): String = Environment.getExternalStorageDirectory().absolutePath
 
 /** True when [path] is the internal root or inside it. */
@@ -179,13 +214,15 @@ private fun insideRoot(path: String): Boolean {
     return path == root || path.startsWith("$root/")
 }
 
-/** The folder above [path], or null at the internal root. */
+/** The folder above [path]. Mounted storage uses its own parent rule; phone storage stops at its root. */
 private fun upPathOf(path: String): String? {
+    if (SafStorage.isSaf(path)) return SafStorage.parentTreeUri(Uri.parse(path))?.toString()
     if (path == internalRoot() || !insideRoot(path)) return null
     return File(path).parent?.takeIf { insideRoot(it) }
 }
 
-private fun isLocalArchive(path: String): Boolean = isArchive(File(path).name)
+/** Only phone archives can be extracted or zipped by the engine. */
+private fun isLocalArchive(path: String): Boolean = !SafStorage.isSaf(path) && isArchive(File(path).name)
 
 private fun batchDone(b: BatchState): Int =
     b.items.count { it.status != BatchStatus.Waiting && it.status != BatchStatus.Working }
@@ -203,44 +240,39 @@ private fun unreadableMessage(path: String): String =
         "This folder can't be read."
     }
 
-/** Sorts a flat list the same way the folder lists are sorted. */
-private fun sortItems(items: List<FileItem>, opts: ListOptions): List<FileItem> {
-    val visible = items.filter { opts.showHidden || !it.name.startsWith(".") }
-    val byName: Comparator<FileItem> = compareBy { it.name.lowercase() }
-    val comparator: Comparator<FileItem> = when (opts.sort) {
-        SortMode.Name -> byName
-        SortMode.Size -> compareBy<FileItem> { it.size }.thenBy { it.name.lowercase() }
-        SortMode.Date -> compareBy<FileItem> { it.modified }.thenBy { it.name.lowercase() }
-        SortMode.Type -> compareBy<FileItem> { it.name.substringAfterLast('.', "").lowercase() }
-            .thenBy { it.name.lowercase() }
-    }
-    val ordered = if (opts.descending) visible.sortedWith(comparator.reversed()) else visible.sortedWith(comparator)
-    return ordered.sortedBy { !it.directory }
-}
-
-/** Loads the rows of one pane. A folder lists its contents; a category scans all of internal storage. */
-private suspend fun loadPane(pane: PaneState, data: PaneData, opts: ListOptions) {
+/** Loads the rows of one pane. A folder lists its contents; a category scans phone storage. */
+private suspend fun loadPane(context: Context, pane: PaneState, data: PaneData, opts: ListOptions) {
     data.loading = true
     data.error = null
     val category = pane.category
-    if (category == null) {
-        val items = withContext(Dispatchers.IO) { FileListing.listLocal(pane.path, opts) }
-        if (items == null) {
-            data.error = unreadableMessage(pane.path)
-            data.entries = emptyList()
-        } else {
-            data.entries = items
-        }
-        data.loading = false
-    } else {
+    if (category != null) {
         data.entries = emptyList()
         FileScan.find(File(internalRoot())) { f -> f.isFile && f.extension.lowercase() in category.extensions }
             .collect { found -> data.entries = FileSort.sort(found, opts.sort, opts.descending) }
         data.loading = false
+        return
     }
+    val items = withContext(Dispatchers.IO) {
+        if (SafStorage.isSaf(pane.path)) {
+            FileListing.list(context, pane.path, opts)
+        } else {
+            FileListing.listLocal(pane.path, opts)
+        }
+    }
+    if (items == null) {
+        data.error = if (SafStorage.isSaf(pane.path)) {
+            "This mounted storage did not answer. Remove it and add it again."
+        } else {
+            unreadableMessage(pane.path)
+        }
+        data.entries = emptyList()
+    } else {
+        data.entries = items
+    }
+    data.loading = false
 }
 
-/** Folders that match what the user typed after a slash. Only folders inside internal storage are offered. */
+/** Folders that match what the user typed after a slash. Only folders inside phone storage are offered. */
 private fun pathSuggestionsFor(typed: String): List<String> {
     val asFile = File(typed)
     val parent: File
@@ -262,13 +294,138 @@ private fun pathSuggestionsFor(typed: String): List<String> {
         .map { it.absolutePath }
 }
 
-/** Opens an archive in the extraction screen. Anything else opens in the matching app. */
+/**
+ * What tapping a file does. Archives go to the extraction screen (mounted archives are copied to
+ * the app cache first, since the engine reads files). Everything else opens in a matching app.
+ */
 private fun openFile(context: Context, item: FileItem, onArchive: (String) -> Unit, onMessage: (String) -> Unit) {
-    if (!item.directory && isArchive(item.name)) {
+    if (item.directory) return
+    if (SafStorage.isSaf(item.path)) {
+        val uri = Uri.parse(item.path)
+        if (isArchive(item.name)) {
+            val local: String? = PinnedStorage.resolveDocumentPath(uri)
+                ?: SafStorage.copyToCache(context, uri, item.name)?.absolutePath
+            if (local != null) {
+                onArchive(local)
+            } else {
+                onMessage("Could not read this archive from the mounted storage.")
+            }
+            return
+        }
+        runCatching { context.startActivity(SafStorage.viewIntent(context, uri, null)) }
+            .onFailure { onMessage(it.message ?: "No app can open this file.") }
+        return
+    }
+    if (isArchive(item.name)) {
         onArchive(item.path)
         return
     }
     FileOpener.open(context, item.path).onFailure { onMessage(it.message ?: "This file could not be opened.") }
+}
+
+/** Name and folder flag of a mounted document. Null when the provider no longer has it. */
+private fun docInfo(context: Context, uri: Uri): Pair<String, Boolean>? {
+    val cursor = context.contentResolver.query(
+        uri,
+        arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE),
+        null,
+        null,
+        null,
+    ) ?: return null
+    return cursor.use { c ->
+        if (!c.moveToFirst()) {
+            null
+        } else {
+            val name = c.getString(0)
+            if (name == null) null else name to (c.getString(1) == DocumentsContract.Document.MIME_TYPE_DIR)
+        }
+    }
+}
+
+/** The tree URI that a mounted document belongs to, read from the document URI. */
+private fun treeOf(docUri: Uri): Uri? {
+    val segments = docUri.pathSegments
+    val index = segments.indexOf("tree")
+    if (index < 0 || index + 1 >= segments.size) return null
+    return DocumentsContract.buildTreeDocumentUri(docUri.authority, segments[index + 1])
+}
+
+/** The display name of a phone path or a mounted document. */
+private fun displayNameOf(context: Context, path: String): String =
+    if (SafStorage.isSaf(path)) {
+        docInfo(context, Uri.parse(path))?.first ?: path
+    } else {
+        File(path).name
+    }
+
+/**
+ * Copies one item from [src] to [dest]. Either side can be phone storage or a mounted tree.
+ * Mount to mount goes through the app cache, because the two providers can't talk directly.
+ */
+private fun copyOne(context: Context, src: String, dest: String): Result<Unit> = runCatching {
+    val destMounted = SafStorage.isSaf(dest)
+    if (!SafStorage.isSaf(src)) {
+        if (destMounted) {
+            SafTree.copyToTree(context, File(src), Uri.parse(dest)).getOrThrow()
+        } else {
+            FileTransfer.run(TransferKind.Copy, listOf(src), File(dest), ConflictPolicy.KeepBoth) { _ -> }.getOrThrow()
+        }
+    } else {
+        val srcUri = Uri.parse(src)
+        val (name, isDirectory) = docInfo(context, srcUri) ?: throw IllegalStateException("The item is no longer there.")
+        val tree = treeOf(srcUri) ?: throw IllegalStateException("Could not reach the mounted storage.")
+        val docId = DocumentsContract.getDocumentId(srcUri)
+        if (destMounted) {
+            val staging = File(context.cacheDir, "mount-transfer").apply { mkdirs() }
+            val staged = SafTree.copyFromTree(context, tree, docId, name, isDirectory, staging).getOrThrow()
+            try {
+                SafTree.copyToTree(context, staged, Uri.parse(dest)).getOrThrow()
+            } finally {
+                staged.deleteRecursively()
+            }
+        } else {
+            SafTree.copyFromTree(context, tree, docId, name, isDirectory, File(dest)).getOrThrow()
+        }
+    }
+    Unit
+}
+
+/** Deletes phone items with the phone engine and mounted items through the provider. */
+private fun deleteAll(context: Context, paths: List<String>, onProgress: (TransferProgress) -> Unit): Result<Int> =
+    runCatching {
+        val mounted = paths.filter { SafStorage.isSaf(it) }
+        val local = paths.filter { !SafStorage.isSaf(it) }
+        if (local.isNotEmpty()) {
+            FileTransfer.run(TransferKind.Delete, local, null, onProgress).getOrThrow()
+        }
+        mounted.forEachIndexed { index, path ->
+            onProgress(TransferProgress("Deleting", displayNameOf(context, path), 0L, 0L, index, mounted.size))
+            SafTree.delete(context, Uri.parse(path)).getOrThrow()
+        }
+        paths.size
+    }
+
+/** Copy or move for any mix of phone and mounted items. Phone-to-phone uses the fast local engine. */
+private fun performTransfer(
+    context: Context,
+    paths: List<String>,
+    cut: Boolean,
+    dest: String,
+    policy: ConflictPolicy,
+    onProgress: (TransferProgress) -> Unit,
+): Result<Int> {
+    if (paths.none { SafStorage.isSaf(it) } && !SafStorage.isSaf(dest)) {
+        return FileTransfer.run(if (cut) TransferKind.Move else TransferKind.Copy, paths, File(dest), policy, onProgress)
+    }
+    val title = if (cut) "Moving" else "Copying"
+    return runCatching {
+        paths.forEachIndexed { index, src ->
+            onProgress(TransferProgress(title, displayNameOf(context, src), 0L, 0L, index, paths.size))
+            copyOne(context, src, dest).getOrThrow()
+            if (cut) deleteAll(context, listOf(src), onProgress).getOrThrow()
+        }
+        paths.size
+    }
 }
 
 private fun Context.findActivity(): Activity? {
@@ -300,6 +457,7 @@ fun FileManagerScreen(
     remember(context) { AppPrefs.load(context) }
 
     var granted by remember { mutableStateOf(hasStorageAccess(context)) }
+    var mounts by remember { mutableStateOf(MountStore.list(context)) }
     var split by remember { mutableStateOf(false) }
     var activeIndex by remember { mutableStateOf(0) }
     val paneA = remember { PaneState(root) }
@@ -333,6 +491,11 @@ fun FileManagerScreen(
     val activeData = if (split && activeIndex == 1) dataB else dataA
     val destPane = if (activeIndex == 0) paneB else paneA
     val upActive = if (activePane.category == null) upPathOf(activePane.path) else null
+    val activeMount: Uri? = if (activePane.category == null) {
+        mounts.firstOrNull { SafTree.rootDocumentUri(it).toString() == activePane.path }
+    } else {
+        null
+    }
 
     fun goFolder(pane: PaneState, path: String) {
         pane.category = null
@@ -345,6 +508,18 @@ fun FileManagerScreen(
         activePane.path = root
         query = ""
         sel.selected.clear()
+    }
+
+    fun openMount(uri: Uri) {
+        goFolder(activePane, SafTree.rootDocumentUri(uri).toString())
+        query = ""
+    }
+
+    fun removeMount(uri: Uri) {
+        MountStore.remove(context, uri)
+        mounts = MountStore.list(context)
+        goFolder(activePane, root)
+        message = "Mount removed."
     }
 
     fun setClipboard(paths: List<String>, cut: Boolean) {
@@ -366,9 +541,8 @@ fun FileManagerScreen(
     fun runTransfer(paths: List<String>, cut: Boolean, dest: String, policy: ConflictPolicy) {
         scope.launch {
             sel.progress = TransferProgress(if (cut) "Moving" else "Copying", "", 0L, 0L, 0, paths.size)
-            val kind = if (cut) TransferKind.Move else TransferKind.Copy
             val result = withContext(Dispatchers.IO) {
-                FileTransfer.run(kind, paths, File(dest), policy) { p -> scope.launch { sel.progress = p } }
+                performTransfer(context, paths, cut, dest, policy) { p -> scope.launch { sel.progress = p } }
             }
             sel.progress = null
             result
@@ -385,15 +559,16 @@ fun FileManagerScreen(
 
     fun startTransfer(paths: List<String>, cut: Boolean, dest: String) {
         if (paths.isEmpty()) return
-        if (!insideRoot(dest)) {
-            message = "Choose a folder inside internal storage."
+        if (!SafStorage.isSaf(dest) && !insideRoot(dest)) {
+            message = "Choose a folder inside internal storage or a mounted storage."
             return
         }
-        if (paths.all { File(it).parent == dest }) {
+        if (!SafStorage.isSaf(dest) && paths.all { !SafStorage.isSaf(it) && File(it).parent == dest }) {
             message = "Those items are already in this folder."
             return
         }
-        val names = FileTransfer.conflicts(paths, File(dest))
+        val phoneOnly = paths.none { SafStorage.isSaf(it) } && !SafStorage.isSaf(dest)
+        val names = if (phoneOnly) FileTransfer.conflicts(paths, File(dest)) else emptyList()
         if (names.isNotEmpty()) {
             pending = PendingTransfer(paths, cut, dest, names)
         } else {
@@ -430,7 +605,7 @@ fun FileManagerScreen(
         scope.launch {
             sel.progress = TransferProgress("Deleting", "", 0L, 0L, 0, paths.size)
             val result = withContext(Dispatchers.IO) {
-                FileTransfer.run(TransferKind.Delete, paths, null) { p -> scope.launch { sel.progress = p } }
+                deleteAll(context, paths) { p -> scope.launch { sel.progress = p } }
             }
             sel.progress = null
             message = result.fold(
@@ -458,6 +633,19 @@ fun FileManagerScreen(
         query = ""
     }
 
+    val mountLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            if (SafTree.persist(context, uri)) {
+                MountStore.add(context, uri)
+                mounts = MountStore.list(context)
+                openMount(uri)
+                message = "Mounted ${SafStorage.displayName(context, uri) ?: "storage"}."
+            } else {
+                message = "This storage could not be granted permission."
+            }
+        }
+    }
+
     val legacyPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
@@ -474,8 +662,8 @@ fun FileManagerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(paneA.path, paneA.category, refresh, opts) { loadPane(paneA, dataA, opts) }
-    LaunchedEffect(paneB.path, paneB.category, refresh, opts) { loadPane(paneB, dataB, opts) }
+    LaunchedEffect(paneA.path, paneA.category, refresh, opts) { loadPane(context, paneA, dataA, opts) }
+    LaunchedEffect(paneB.path, paneB.category, refresh, opts) { loadPane(context, paneB, dataB, opts) }
     LaunchedEffect(paneA.path, paneA.category, paneB.path, paneB.category) { sel.selected.clear() }
     LaunchedEffect(batch.finished) {
         if (batch.finished) refresh++
@@ -561,7 +749,16 @@ fun FileManagerScreen(
         })
         Spacer(Modifier.height(12.dp))
 
-        QuickJumpRow(selected = activePane.category, onJump = { jump(it) })
+        QuickJumpRow(
+            selected = activePane.category,
+            internalSelected = activePane.category == null && activeMount == null && !SafStorage.isSaf(activePane.path),
+            mounts = mounts,
+            activeMount = activeMount,
+            onJump = { jump(it) },
+            onOpenMount = { openMount(it) },
+            onAddMount = { mountLauncher.launch(null) },
+            onRemoveMount = { removeMount(it) },
+        )
         Spacer(Modifier.height(10.dp))
 
         SearchBar(query = query, onQuery = { query = it }, onClear = { query = "" })
@@ -570,7 +767,7 @@ fun FileManagerScreen(
         if (granted) {
             PathCard(
                 title = activePane.category?.let { "All ${it.label.lowercase()} · ${activeData.entries.size} file(s)" }
-                    ?: activePane.path,
+                    ?: SafStorage.locationLabel(context, activePane.path),
                 storagePath = root,
             )
             Spacer(Modifier.height(10.dp))
@@ -664,7 +861,8 @@ fun FileManagerScreen(
                 )
             }
         }
-                sel.progress?.let { p ->
+
+        sel.progress?.let { p ->
             Spacer(Modifier.height(10.dp))
             TransferBar(p = p, onCancel = { FileTransfer.cancel() })
         }
@@ -674,7 +872,11 @@ fun FileManagerScreen(
             PasteBar(
                 count = clip.paths.size,
                 cut = clip.cut,
-                destination = if (activePane.category == null) activePane.path else "Open a folder to paste into",
+                destination = if (activePane.category == null) {
+                    SafStorage.locationLabel(context, activePane.path)
+                } else {
+                    "Open a folder to paste into"
+                },
                 canPaste = activePane.category == null,
                 onPaste = { pasteClipboard() },
                 onCancel = {
@@ -704,38 +906,29 @@ fun FileManagerScreen(
                     if (split) transferSelected(true, destPane) else takeSelection(true)
                 },
                 onZip = {
-                    when {
-                        sel.selected.isEmpty() -> {
-                            message = "Tap items to select them first."
-                        }
-                        activePane.category != null -> {
-                            message = "Open a folder first to save the zip."
-                        }
-                        else -> {
-                            zipInputs = sel.selected.toList()
-                            showCompress = true
-                        }
+                    if (sel.selected.isEmpty()) {
+                        message = "Tap items to select them first."
+                    } else if (activePane.category != null) {
+                        message = "Open a folder first to save the zip."
+                    } else {
+                        zipInputs = sel.selected.filter { !SafStorage.isSaf(it) }
+                        showCompress = true
                     }
                 },
                 onExtract = {
                     val archives = sel.selected.filter { isLocalArchive(it) }
-                    when {
-                        sel.selected.isEmpty() -> {
-                            message = "Tap items to select them first."
-                        }
-                        archives.isEmpty() -> {
-                            message = "Select archive files (zip, 7z, tar, rar) to extract."
-                        }
-                        batch.running || viewModel.extraction.value.running -> {
-                            message = "Another extraction is running. Wait for it to finish."
-                        }
-                        else -> {
-                            val s = viewModel.settings
-                            BatchExtractor.start(archives, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault)
-                            sel.selecting = false
-                            sel.selected.clear()
-                            showBatch = true
-                        }
+                    if (sel.selected.isEmpty()) {
+                        message = "Tap items to select them first."
+                    } else if (archives.isEmpty()) {
+                        message = "Select archive files (zip, 7z, tar, rar) on phone storage to extract."
+                    } else if (batch.running || viewModel.extraction.value.running) {
+                        message = "Another extraction is running. Wait for it to finish."
+                    } else {
+                        val s = viewModel.settings
+                        BatchExtractor.start(archives, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault)
+                        sel.selecting = false
+                        sel.selected.clear()
+                        showBatch = true
                     }
                 },
                 onDelete = {
@@ -792,7 +985,9 @@ fun FileManagerScreen(
                 if (typed.isBlank() || typed.contains('/') || typed.contains('\\')) {
                     message = "Use a plain name for the zip file."
                 } else if (zipInputs.isEmpty()) {
-                    message = "Nothing to zip. Select files first."
+                    message = "Nothing to zip. Select files on phone storage first."
+                } else if (SafStorage.isSaf(activePane.path)) {
+                    message = "Open a folder on phone storage to save the zip."
                 } else {
                     val output = File(activePane.path, clean).absolutePath
                     val inputs = zipInputs
@@ -864,7 +1059,7 @@ fun FileManagerScreen(
         }
     }
 }
-/** One browsing pane: its list of rows, the item menus, and the folder, file, rename and delete dialogs. */
+/** One browsing pane: its rows, the item menus, and the folder, file, rename and delete dialogs. */
 @Composable
 private fun PaneView(
     pane: PaneState,
@@ -884,7 +1079,6 @@ private fun PaneView(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val category = pane.category
-    val root = internalRoot()
     var actionItem by remember { mutableStateOf<FileItem?>(null) }
     var infoItem by remember { mutableStateOf<FileItem?>(null) }
     var renameItem by remember { mutableStateOf<FileItem?>(null) }
@@ -1110,8 +1304,12 @@ private fun PaneView(
                             val here = pane.path
                             showNewFolder = false
                             scope.launch {
-                                val result = withContext(Dispatchers.IO) {
-                                    FileOperations.createFolder(File(here), name).map { it.name }
+                                val result: Result<String> = withContext(Dispatchers.IO) {
+                                    if (SafStorage.isSaf(here)) {
+                                        SafTree.createFolder(context, Uri.parse(here), name).map { name }
+                                    } else {
+                                        FileOperations.createFolder(File(here), name).map { it.name }
+                                    }
                                 }
                                 result
                                     .onSuccess { onMessage("Created $it") }
@@ -1150,10 +1348,15 @@ private fun PaneView(
                         enabled = inputName.isNotBlank(),
                         onClick = {
                             val name = inputName.trim()
+                            val targetPath = target.path
                             renameItem = null
                             scope.launch {
-                                val result = withContext(Dispatchers.IO) {
-                                    FileOperations.rename(File(target.path), name).map { it.name }
+                                val result: Result<String> = withContext(Dispatchers.IO) {
+                                    if (SafStorage.isSaf(targetPath)) {
+                                        SafTree.rename(context, Uri.parse(targetPath), name).map { name }
+                                    } else {
+                                        FileOperations.rename(File(targetPath), name).map { it.name }
+                                    }
                                 }
                                 result
                                     .onSuccess { onMessage("Renamed to $it") }
@@ -1324,11 +1527,22 @@ private fun SearchRow(icon: ImageVector, title: String, subtitle: String, onClic
     }
 }
 
+/** Quick jump chips: Internal, the file categories, the mounted storages, and the mount buttons. */
 @Composable
-private fun QuickJumpRow(selected: Category?, onJump: (Category?) -> Unit) {
+private fun QuickJumpRow(
+    selected: Category?,
+    internalSelected: Boolean,
+    mounts: List<Uri>,
+    activeMount: Uri?,
+    onJump: (Category?) -> Unit,
+    onOpenMount: (Uri) -> Unit,
+    onAddMount: () -> Unit,
+    onRemoveMount: (Uri) -> Unit,
+) {
+    val context = LocalContext.current
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            GlassChip(text = "Internal", selected = selected == null, onClick = { onJump(null) })
+            GlassChip(text = "Internal", selected = internalSelected, onClick = { onJump(null) })
         }
         items(Category.entries) { category ->
             GlassChip(
@@ -1336,6 +1550,21 @@ private fun QuickJumpRow(selected: Category?, onJump: (Category?) -> Unit) {
                 selected = selected == category,
                 onClick = { onJump(category) },
             )
+        }
+        items(mounts) { uri ->
+            GlassChip(
+                text = SafStorage.displayName(context, uri) ?: "Mount",
+                selected = activeMount == uri,
+                onClick = { onOpenMount(uri) },
+            )
+        }
+        item {
+            GlassChip(text = "+ Mount", onClick = onAddMount)
+        }
+        if (activeMount != null) {
+            item {
+                GlassChip(text = "Remove mount", onClick = { onRemoveMount(activeMount) })
+            }
         }
     }
 }
@@ -1520,6 +1749,7 @@ private fun PermissionCard(onAllow: () -> Unit) {
         }
     }
 }
+
 /** The progress box shown while files are copied, moved or deleted. It can be cancelled. */
 @Composable
 private fun TransferBar(p: TransferProgress, onCancel: () -> Unit) {
@@ -1900,6 +2130,7 @@ private fun NewFileDialog(
     onResult: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("New file.txt") }
     var busy by remember { mutableStateOf(false) }
@@ -1945,14 +2176,20 @@ private fun NewFileDialog(
                         busy = true
                         val typed = name.trim()
                         scope.launch {
-                            val result = withContext(Dispatchers.IO) {
-                                FileTools.createFile(File(dir), typed).fold(
-                                    onSuccess = { "Created ${it.name}." },
-                                    onFailure = { it.message ?: "The file could not be created." },
-                                )
+                            val created: Result<String> = withContext(Dispatchers.IO) {
+                                if (SafStorage.isSaf(dir)) {
+                                    SafTree.createFile(context, Uri.parse(dir), typed).map { typed }
+                                } else {
+                                    FileTools.createFile(File(dir), typed).map { it.name }
+                                }
                             }
                             busy = false
-                            onResult(result)
+                            onResult(
+                                created.fold(
+                                    onSuccess = { "Created $it." },
+                                    onFailure = { it.message ?: "The file could not be created." },
+                                ),
+                            )
                             onDismiss()
                         }
                     },
