@@ -89,6 +89,7 @@ class CronosViewModel(application: Application) : AndroidViewModel(application) 
 
     private var lastPassword: String? = null
     private var pendingCheck: CheckConfig? = null
+    private var pendingExtract: ExtractConfig? = null
     private var activeExtractConfig: ExtractConfig? = null
     private var lastSampleDone = 0L
     private var lastSampleAt = 0L
@@ -166,6 +167,16 @@ class CronosViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun retryPassword(password: String) {
+        val extract = pendingExtract
+        if (extract != null) {
+            pendingExtract = null
+            lastPassword = password
+            val retry = extract.copy(password = password)
+            activeExtractConfig = retry
+            beginExtraction(retry)
+            _effects.tryEmit(UiEffect.ExtractionStarted)
+            return
+        }
         val config = pendingCheck ?: return
         pendingCheck = null
         performCheck(config.copy(password = password), navigate = true, full = true, remember = true)
@@ -173,6 +184,7 @@ class CronosViewModel(application: Application) : AndroidViewModel(application) 
 
     fun cancelPassword() {
         pendingCheck = null
+        pendingExtract = null
     }
 
     fun recheckCurrent() {
@@ -346,6 +358,17 @@ class CronosViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             } catch (error: EngineException) {
+                if (error.code == "PASSWORD_NEEDED" || error.code == "WRONG_PASSWORD") {
+                    // Keep the job and ask for the password again instead of failing it.
+                    withContext(Dispatchers.Main) {
+                        pendingExtract = config
+                        _extraction.value = ExtractionState()
+                        _effects.tryEmit(
+                            UiEffect.PasswordNeeded(wrong = error.code == "WRONG_PASSWORD"),
+                        )
+                    }
+                    return@launch
+                }
                 withContext(Dispatchers.Main) {
                     _extraction.update {
                         it.copy(
