@@ -136,6 +136,13 @@ fun ThemeScreen(onBack: () -> Unit) {
                 onClick = { if (materialAvailable) AppPrefs.setTheme(context, ThemeMode.Material) },
             )
             ModeOption(
+                mode = ThemeMode.PureMaterial,
+                selected = mode == ThemeMode.PureMaterial,
+                enabled = materialAvailable,
+                note = if (materialAvailable) null else "Needs Android 12 or newer. This phone uses Cronos blue.",
+                onClick = { if (materialAvailable) AppPrefs.setTheme(context, ThemeMode.PureMaterial) },
+            )
+            ModeOption(
                 mode = ThemeMode.Custom,
                 selected = mode == ThemeMode.Custom,
                 enabled = true,
