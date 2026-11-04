@@ -10,16 +10,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.cronoszip.app.ui.screens.liquidGlass
 import com.cronoszip.app.ui.theme.CronosBlue
-import com.cronoszip.app.ui.theme.InkBlue
-import com.cronoszip.app.ui.theme.NightBlue
 
 /**
- * An opaque card for dialogs. GlassCard is translucent on purpose, so inside a dialog the
- * screen behind it shows through. Use this for every dialog surface.
+ * Dialog and action-menu surface. It uses the same liquid-glass panel as the rest of the app.
+ * A dark base sits under the glass so text stays readable over the screen behind it, and a soft
+ * accent rim frames it. Pure Material You shows a solid container instead.
  */
 @Composable
 fun SolidDialogCard(
@@ -32,8 +31,9 @@ fun SolidDialogCard(
         modifier = modifier
             .widthIn(max = 380.dp)
             .clip(shape)
-            .background(Brush.verticalGradient(listOf(NightBlue, InkBlue)))
-            .border(1.dp, glow.copy(alpha = 0.5f), shape)
+            .background(Color(0xE6071324))
+            .liquidGlass(28.dp)
+            .border(1.dp, glow.copy(alpha = 0.45f), shape)
             .padding(20.dp),
         content = content,
     )
