@@ -351,6 +351,18 @@ fn entry_json(item: &Item) -> Value {
     })
 }
 
+/// Proves the password before anything is read or changed. An encrypted archive
+/// with no password is PASSWORD_NEEDED, and a wrong one is WRONG_PASSWORD.
+fn require_password(job: &engine::Job, password: Option<&str>) -> anyhow::Result<()> {
+    if !job.encrypted() {
+        return Ok(());
+    }
+    match password {
+        None => Err(archive::PasswordNeeded.into()),
+        Some(_) => job.check_password(),
+    }
+}
+
 fn check_inner(cfg: CheckConfig) -> Result<Value> {
     let archive = PathBuf::from(&cfg.archive);
     let (primary, paths) = session::locate(&archive)?;
@@ -382,6 +394,10 @@ fn check_inner(cfg: CheckConfig) -> Result<Value> {
             "inPlaceRefusal": Value::Null,
             "plan": empty_plan(cfg.keep_free),
         }));
+    }
+
+    if let State::Fresh(job, _) | State::Resume(job, _) = &state {
+        require_password(job, password)?;
     }
 
     let (job, out, journal) = match state {
@@ -519,6 +535,10 @@ fn extract_inner(
     emitter.phase("preparing", "Opening the archive and reading its index");
     let state = session::open(&primary, &paths, output, true, password, &reads)
         .map_err(EngineError::from)?;
+
+    if let State::Fresh(job, _) | State::Resume(job, _) = &state {
+        require_password(job, password).map_err(EngineError::from)?;
+    }
 
     let (job, journal) = match state {
         State::Orphan(journal) => {
