@@ -96,6 +96,19 @@ private fun buildTheme(context: Context, mode: ThemeMode, customArgb: Int): Colo
         applyAccents(customAccents(Color(customArgb)))
         cronosScheme()
     }
+    ThemeMode.PureMaterial -> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val wallpaper = dynamicDarkColorScheme(context)
+            applyAccents(materialAccents(wallpaper))
+            SolidSurface = wallpaper.surfaceContainer
+            SolidSurfaceRim = wallpaper.outlineVariant
+            wallpaper
+        } else {
+            applyAccents(cronosAccents)
+            SolidSurface = NightBlue
+            cronosScheme()
+        }
+    }
     ThemeMode.Material -> {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val wallpaper = dynamicDarkColorScheme(context)
