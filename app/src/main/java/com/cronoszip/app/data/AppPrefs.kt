@@ -6,10 +6,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
 /** Available app theme palettes. */
-enum class ThemeMode {
-    Cronos,
-    Custom,
-    Material,
+enum class ThemeMode(val label: String, val description: String) {
+    Cronos("Cronos blue", "The original Cronos Manager look."),
+    Material("Phone colours (Material You)", "Colours taken from your wallpaper. Needs Android 12 or newer."),
+    Custom("Custom colour", "One accent colour you pick, used across the whole app."),
 }
 
 /** App-wide display settings, persisted immediately and restored on launch. */

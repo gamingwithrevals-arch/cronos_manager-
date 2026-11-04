@@ -5,13 +5,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
-/** The three ways the app can be coloured. */
-enum class ThemeMode(val label: String, val description: String) {
-    Cronos("Cronos blue", "The original Chronos Manager look."),
-    Material("Phone colours (Material You)", "Colours taken from your wallpaper. Needs Android 12 or newer."),
-    Custom("Custom colour", "One accent colour you pick, used across the whole app."),
-}
-
 /** The theme choice and custom colour, saved to disk and loaded on every launch. */
 object ThemePrefs {
     private const val PREFS = "cronoszip.theme"
