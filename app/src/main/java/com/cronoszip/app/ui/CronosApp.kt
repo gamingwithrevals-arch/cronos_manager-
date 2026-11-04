@@ -206,6 +206,7 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                     onOpenArchive = { nav.navigate(Routes.archiveView(it)) },
                     onExtract = { nav.navigate(Routes.browser(BrowserMode.Archive)) },
                     onSettings = { nav.navigate(Routes.Settings) },
+                    onOpenTheme = { nav.navigate(Routes.ThemePicker) },
                 )
             }
 
