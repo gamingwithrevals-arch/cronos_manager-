@@ -189,7 +189,7 @@ fun FileBrowserScreen(
         if (mode == BrowserMode.Folder) {
             Spacer(Modifier.height(10.dp))
             PrimaryButton(
-                text = "Use this folder",
+                text = "Extract here",
                 icon = Icons.Rounded.Upload,
                 enabled = browser.current.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
