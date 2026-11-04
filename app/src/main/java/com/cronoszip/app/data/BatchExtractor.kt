@@ -28,9 +28,10 @@ data class BatchState(
 
 /**
  * Extracts several archives one after another, each in its own folder, using the default
- * settings. It uses the same engine calls as single extraction. Password-protected archives,
- * archives that need the Keep option, and archives whose files already exist are skipped with
- * a reason, so nothing is overwritten without asking.
+ * settings. It uses the same engine calls as single extraction. Password-protected archives
+ * use the password in [passwords] when there is one; otherwise they are skipped with a reason.
+ * Archives that need the Keep option, and archives whose files already exist, are also skipped,
+ * so nothing is overwritten without asking.
  */
 object BatchExtractor {
     private val repository = ArchiveRepository()
@@ -39,7 +40,13 @@ object BatchExtractor {
     private val _state = MutableStateFlow(BatchState())
     val state: StateFlow<BatchState> = _state.asStateFlow()
 
-    fun start(paths: List<String>, keepArchive: Boolean, keepFree: Long, verifyFirst: Boolean) {
+    fun start(
+        paths: List<String>,
+        keepArchive: Boolean,
+        keepFree: Long,
+        verifyFirst: Boolean,
+        passwords: Map<String, String> = emptyMap(),
+    ) {
         if (_state.value.running || paths.isEmpty()) return
         stopRequested = false
         _state.value = BatchState(
@@ -53,7 +60,8 @@ object BatchExtractor {
                     mark(index, BatchStatus.Skipped, "Stopped before this archive started.")
                 } else {
                     mark(index, BatchStatus.Working, "Extracting…")
-                    val (status, message) = runOne(path, keepArchive, keepFree, verifyFirst)
+                    val (status, message) =
+                        runOne(path, keepArchive, keepFree, verifyFirst, passwords[path])
                     mark(index, status, message)
                 }
             }
@@ -77,16 +85,25 @@ object BatchExtractor {
         keepArchive: Boolean,
         keepFree: Long,
         verifyFirst: Boolean,
+        password: String?,
     ): Pair<BatchStatus, String> {
         val check = try {
             repository.check(
-                CheckConfig(archive = path, output = null, keepArchive = keepArchive, keepFree = keepFree, password = null),
+                CheckConfig(
+                    archive = path,
+                    output = null,
+                    keepArchive = keepArchive,
+                    keepFree = keepFree,
+                    password = password,
+                ),
             )
         } catch (error: EngineException) {
-            return if (error.code == "PASSWORD_NEEDED") {
-                BatchStatus.Skipped to "Password protected. Extract it alone to enter the password."
-            } else {
-                BatchStatus.Failed to error.message
+            return when (error.code) {
+                "PASSWORD_NEEDED" -> BatchStatus.Skipped to
+                    "Password protected and no password was entered. Extract it alone to enter it."
+                "WRONG_PASSWORD" -> BatchStatus.Failed to
+                    "That password did not open this archive."
+                else -> BatchStatus.Failed to error.message
             }
         } catch (error: Exception) {
             return BatchStatus.Failed to (error.message ?: "The archive could not be read.")
@@ -107,7 +124,7 @@ object BatchExtractor {
                     replace = "none",
                     verifyFirst = verifyFirst,
                     keepFree = keepFree,
-                    password = null,
+                    password = password,
                 ),
             ) { }
             if (summary.paused) {
@@ -118,10 +135,12 @@ object BatchExtractor {
                 BatchStatus.Done to "Extracted to ${summary.output}."
             }
         } catch (error: EngineException) {
-            if (error.code == "EXISTS") {
-                BatchStatus.Skipped to "Files already exist there. Extract it alone to replace or keep them."
-            } else {
-                BatchStatus.Failed to error.message
+            when (error.code) {
+                "EXISTS" -> BatchStatus.Skipped to
+                    "Files already exist there. Extract it alone to replace or keep them."
+                "WRONG_PASSWORD" -> BatchStatus.Failed to
+                    "That password did not open this archive."
+                else -> BatchStatus.Failed to error.message
             }
         } catch (error: Exception) {
             BatchStatus.Failed to (error.message ?: "The extraction failed.")
