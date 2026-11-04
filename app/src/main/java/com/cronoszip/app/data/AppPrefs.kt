@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 enum class ThemeMode(val label: String, val description: String) {
     Cronos("Cronos blue", "The original Cronos Manager look."),
     Material("Phone colours (Material You)", "Colours taken from your wallpaper. Needs Android 12 or newer."),
+    PureMaterial("Pure Material You", "Solid Material You colours with no glass. Needs Android 12 or newer."),
     Custom("Custom colour", "One accent colour you pick, used across the whole app."),
 }
 
