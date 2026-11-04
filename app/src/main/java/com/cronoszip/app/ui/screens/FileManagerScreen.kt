@@ -2515,6 +2515,7 @@ private fun NewFileDialog(
     var name by remember { mutableStateOf("New file.txt") }
     var busy by remember { mutableStateOf(false) }
     val extensions = listOf(".txt", ".ini", ".cfg", ".json", ".md", ".log", ".xml", ".sh")
+
     Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
         SolidDialogCard(glow = CronosCyan) {
             Text("New file", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
@@ -2534,10 +2535,8 @@ private fun NewFileDialog(
             )
             Spacer(Modifier.height(10.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(extensions) { ext ->
+                items(extensions) { extension ->
                     GlassChip(
-                        text = ext,
-                        onClick = { name = name.substringBeforeLast('.', name) + ext },
+                        text = extension,
+                        onClick = { name = name.substringBeforeLast(".", name) + extension },
                     )
-                }
- 
