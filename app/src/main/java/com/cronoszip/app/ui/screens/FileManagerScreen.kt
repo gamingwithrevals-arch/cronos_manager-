@@ -624,7 +624,7 @@ fun FileManagerScreen(
     var showApps by remember { mutableStateOf(false) }
     var showBatch by remember { mutableStateOf(false) }
     var batchArchives by remember { mutableStateOf<List<String>>(emptyList()) }
-    var batchPasswords by remember { mutableStateOf>(emptyMap()) }
+    var batchPasswords by remember { mutableStateOf(emptyPasswords()) }
     var passwordQueue by remember { mutableStateOf<List<String>>(emptyList()) }
     var batchPasswordWrong by remember { mutableStateOf(false) }
     var batchPasswordBusy by remember { mutableStateOf(false) }
@@ -1163,10 +1163,10 @@ fun FileManagerScreen(
                                 ArchiveProtection.protectedArchives(archives)
                             }
                             if (locked.isEmpty()) {
-                                startBatch(archives, emptyMap())
+                                startBatch(archives, emptyPasswords())
                             } else {
                                 batchArchives = archives
-                                batchPasswords = emptyMap()
+                                batchPasswords = emptyPasswords()
                                 batchPasswordWrong = false
                                 passwordQueue = locked
                             }
@@ -2144,7 +2144,7 @@ private fun PermissionCard(onAllow: () -> Unit) {
             Text("Storage access is needed", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Chronos Manager needs access to read files and open archives.",
+                text = "Cronos Manager needs access to read files and open archives.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
             )
@@ -2773,3 +2773,5 @@ private fun InfoRow(label: String, value: String) {
 }
 
 private fun yesNo(value: Boolean): String = if (value) "Yes" else "No"
+
+private fun emptyPasswords(): Map<String, String> = emptyMap()
