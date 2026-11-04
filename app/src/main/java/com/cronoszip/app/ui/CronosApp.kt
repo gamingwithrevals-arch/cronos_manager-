@@ -300,7 +300,6 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                     onBack = { nav.popBackStack() },
                     onOpenFiles = { nav.navigate(Routes.Files) },
                     onOpenUpdate = { nav.navigate(Routes.Update) },
-                    onOpenTheme = { nav.navigate(Routes.ThemePicker) },
                 )
             }
 
