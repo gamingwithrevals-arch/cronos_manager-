@@ -95,6 +95,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.cronoszip.app.data.AppPrefs
+import com.cronoszip.app.data.ArchiveProtection
 import com.cronoszip.app.data.BatchExtractor
 import com.cronoszip.app.data.BatchItem
 import com.cronoszip.app.data.BatchState
@@ -116,6 +117,7 @@ import com.cronoszip.app.data.SafTree
 import com.cronoszip.app.data.SortMode
 import com.cronoszip.app.data.TransferKind
 import com.cronoszip.app.data.TransferProgress
+import com.cronoszip.app.ui.components.ArchivePasswordDialog
 import com.cronoszip.app.ui.components.GlassCard
 import com.cronoszip.app.ui.components.GlassChip
 import com.cronoszip.app.ui.components.PrimaryButton
@@ -621,6 +623,17 @@ fun FileManagerScreen(
     var showOptions by remember { mutableStateOf(false) }
     var showApps by remember { mutableStateOf(false) }
     var showBatch by remember { mutableStateOf(false) }
+    var batchArchives by remember { mutableStateOf<List<String>>(emptyList()) }
+    var batchPasswords by remember { mutableStateOf>(emptyMap()) }
+    var passwordQueue by remember { mutableStateOf<List<String>>(emptyList()) }
+    var batchPasswordWrong by remember { mutableStateOf(false) }
+    var batchPasswordBusy by remember { mutableStateOf(false) }
+    val passwordScope = rememberCoroutineScope()
+    fun startBatch(paths: List<String>, passwords: Map<String, String>) {
+        val s = viewModel.settings
+        BatchExtractor.start(paths, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault, passwords)
+        showBatch = true
+    }
     var showCompress by remember { mutableStateOf(false) }
     var zipInputs by remember { mutableStateOf<List<String>>(emptyList()) }
     var zipName by remember { mutableStateOf("Archive.zip") }
@@ -1143,11 +1156,21 @@ fun FileManagerScreen(
                     } else if (batch.running || viewModel.extraction.value.running) {
                         message = "Another extraction is running. Wait for it to finish."
                     } else {
-                        val s = viewModel.settings
-                        BatchExtractor.start(archives, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault)
                         sel.selecting = false
                         sel.selected.clear()
-                        showBatch = true
+                        passwordScope.launch {
+                            val locked = withContext(Dispatchers.IO) {
+                                ArchiveProtection.protectedArchives(archives)
+                            }
+                            if (locked.isEmpty()) {
+                                startBatch(archives, emptyMap())
+                            } else {
+                                batchArchives = archives
+                                batchPasswords = emptyMap()
+                                batchPasswordWrong = false
+                                passwordQueue = locked
+                            }
+                        }
                     }
                 },
                 onDelete = {
@@ -1232,6 +1255,37 @@ fun FileManagerScreen(
         ) {
             InstalledAppsScreen(onClose = { showApps = false })
         }
+    }
+
+    passwordQueue.firstOrNull()?.let { locked ->
+        ArchivePasswordDialog(
+            archiveName = File(locked).name,
+            wrong = batchPasswordWrong,
+            busy = batchPasswordBusy,
+            onCancel = {
+                // No password for this archive: the batch skips it with a reason.
+                passwordQueue = passwordQueue.drop(1)
+                batchPasswordWrong = false
+                if (passwordQueue.isEmpty()) startBatch(batchArchives, batchPasswords)
+            },
+            onUnlock = { attempt ->
+                batchPasswordBusy = true
+                passwordScope.launch {
+                    val ok = withContext(Dispatchers.IO) {
+                        ArchiveProtection.unlocks(locked, attempt)
+                    }
+                    batchPasswordBusy = false
+                    if (ok) {
+                        batchPasswords = batchPasswords + (locked to attempt)
+                        batchPasswordWrong = false
+                        passwordQueue = passwordQueue.drop(1)
+                        if (passwordQueue.isEmpty()) startBatch(batchArchives, batchPasswords)
+                    } else {
+                        batchPasswordWrong = true
+                    }
+                }
+            },
+        )
     }
 
     if (showBatch) {
