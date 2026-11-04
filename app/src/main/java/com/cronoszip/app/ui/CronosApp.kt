@@ -68,6 +68,7 @@ import com.cronoszip.app.ui.screens.FileBrowserScreen
 import com.cronoszip.app.ui.screens.FileManagerScreen
 import com.cronoszip.app.ui.screens.HomeScreen
 import com.cronoszip.app.ui.screens.SettingsScreen
+import com.cronoszip.app.ui.screens.ThemeScreen
 import com.cronoszip.app.ui.screens.UpdaterScreen
 import com.cronoszip.app.ui.theme.CronosBlue
 import com.cronoszip.app.ui.theme.CronosCyan
@@ -86,6 +87,7 @@ private object Routes {
     const val Settings = "settings"
     const val Files = "files"
     const val Update = "update"
+    const val ThemePicker = "theme"
     const val ArchivePattern = "archive/{path}"
     fun browser(mode: BrowserMode) = "browser/${mode.name}"
     fun archiveView(path: String) = "archive/${Uri.encode(path)}"
@@ -288,12 +290,17 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                 )
             }
 
+            composable(Routes.ThemePicker) {
+                ThemeScreen(onBack = { nav.popBackStack() })
+            }
+
             composable(Routes.Settings) {
                 SettingsScreen(
                     viewModel = viewModel,
                     onBack = { nav.popBackStack() },
                     onOpenFiles = { nav.navigate(Routes.Files) },
                     onOpenUpdate = { nav.navigate(Routes.Update) },
+                    onOpenTheme = { nav.navigate(Routes.ThemePicker) },
                 )
             }
 
