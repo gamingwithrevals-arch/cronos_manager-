@@ -39,6 +39,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -47,6 +48,7 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shield
@@ -586,6 +588,7 @@ fun FileManagerScreen(
     onOpenArchive: (String) -> Unit,
     onExtract: () -> Unit,
     onSettings: () -> Unit,
+    onOpenTheme: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1177,6 +1180,7 @@ fun FileManagerScreen(
             onHidden = { showHidden = it },
             amoled = AppPrefs.amoled,
             onAmoled = { AppPrefs.setAmoled(context, it) },
+            onTheme = onOpenTheme,
             onDismiss = { showOptions = false },
         )
     }
@@ -2344,17 +2348,72 @@ private fun OptionsDialog(
     onHidden: (Boolean) -> Unit,
     amoled: Boolean,
     onAmoled: (Boolean) -> Unit,
+    onTheme: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
+
     Dialog(onDismissRequest = onDismiss) {
         SolidDialogCard(glow = CronosCyan) {
-            Text("Options", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Text(
+                text = "Options",
+                style = MaterialTheme.typography.titleLarge,
+                color = TextPrimary,
+            )
             Spacer(Modifier.height(14.dp))
 
             SectionTitle("Show")
-            SwitchRow(label = "Hidden files", checked = showHidden, onChange = onHidden)
-            SwitchRow(label = "AMOLED dark theme", checked = amoled, onChange = onAmoled)
+            SwitchRow(
+                label = "Hidden files",
+                checked = showHidden,
+                onChange = onHidden,
+            )
+            SwitchRow(
+                label = "AMOLED dark theme",
+                checked = amoled,
+                onChange = onAmoled,
+            )
+
+            Spacer(Modifier.height(10.dp))
+            SectionTitle("Theme")
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onTheme)
+                    .background(GlassWhite.copy(alpha = 0.03f))
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Palette,
+                    contentDescription = null,
+                    tint = CronosCyan,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Theme & colours",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary,
+                    )
+                    Text(
+                        text = "Cronos blue, phone colours (Material You) or your own colour",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                }
+
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                    contentDescription = null,
+                    tint = TextSecondary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
 
             Spacer(Modifier.height(14.dp))
             SectionTitle("About")
@@ -2371,6 +2430,7 @@ private fun OptionsDialog(
                 color = TextPrimary,
             )
             Spacer(Modifier.height(10.dp))
+
             SecondaryButton(
                 text = "Support on YouTube",
                 modifier = Modifier.fillMaxWidth(),
@@ -2378,7 +2438,11 @@ private fun OptionsDialog(
             )
 
             Spacer(Modifier.height(16.dp))
-            SecondaryButton(text = "Done", modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
+            SecondaryButton(
+                text = "Done",
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onDismiss,
+            )
         }
     }
 }
