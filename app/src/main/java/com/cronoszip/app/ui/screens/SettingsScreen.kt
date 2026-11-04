@@ -90,6 +90,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenFiles: () -> Unit = {},
     onOpenUpdate: () -> Unit = {},
+    onOpenTheme: () -> Unit = {},
 ) {
     val settings = viewModel.settings
     val history = viewModel.history
@@ -225,6 +226,7 @@ fun SettingsScreen(
                         }
                         Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, tint = TextSecondary)
                     }
+                    ThemeEntryRow(onClick = onOpenTheme)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
