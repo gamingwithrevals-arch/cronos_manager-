@@ -50,6 +50,7 @@ import androidx.navigation.navArgument
 import com.cronoszip.app.data.AppPrefs
 import com.cronoszip.app.data.BrowserMode
 import com.cronoszip.app.data.CheckData
+import com.cronoszip.app.data.ThemeMode
 import com.cronoszip.app.data.UiEffect
 import com.cronoszip.app.service.ExtractionNotifications
 import com.cronoszip.app.service.ExtractionService
@@ -188,7 +189,9 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         // AMOLED mode swaps the blue animated background for solid black. Everything else keeps its look.
-        if (AppPrefs.amoled) {
+        if (AppPrefs.themeMode == ThemeMode.PureMaterial) {
+            Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        } else if (AppPrefs.amoled) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black))
         } else {
             LiquidBackground(animate = viewModel.settings.animations)
