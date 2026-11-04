@@ -17,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -78,6 +79,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
@@ -922,83 +924,137 @@ fun FileManagerScreen(
     val upA: String? = if (paneA.category == null) upTargetOf(paneA) else null
     val upB: String? = if (paneB.category == null) upTargetOf(paneB) else null
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .safeDrawingPadding()
-            .padding(horizontal = 16.dp),
-    ) {
-        TopBar(title = "Files", onMore = { showOptions = true })
-        Spacer(Modifier.height(4.dp))
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.screenWidthDp > configuration.screenHeightDp
 
-        ModeSwitch(split = split, onChange = {
-            split = it
-            activeIndex = 0
-        })
-        Spacer(Modifier.height(4.dp))
+    // Header controls. In landscape they sit in a scrollable left panel.
+    val header: @Composable ColumnScope.() -> Unit = {
+            TopBar(title = "Files", onMore = { showOptions = true })
+            Spacer(Modifier.height(4.dp))
 
-        FilesSectionLabel("File types")
-        FilesChipStrip(typeChips)
-        Spacer(Modifier.height(4.dp))
+            ModeSwitch(split = split, onChange = {
+                split = it
+                activeIndex = 0
+            })
+            Spacer(Modifier.height(4.dp))
 
-        FilesSectionLabel("Storage apps")
-        FilesChipStrip(storageChips)
-        Spacer(Modifier.height(4.dp))
+            FilesSectionLabel("File types")
+            FilesChipStrip(typeChips)
+            Spacer(Modifier.height(4.dp))
 
-        SearchBar(query = query, onQuery = { query = it }, onClear = { query = "" })
-        Spacer(Modifier.height(6.dp))
+            FilesSectionLabel("Storage apps")
+            FilesChipStrip(storageChips)
+            Spacer(Modifier.height(4.dp))
 
-        if (granted) {
-            PathCard(
-                title = activePane.category?.let { "All ${it.label.lowercase()}" }
-                    ?: pathTitle(context, activePane.path),
-                itemCount = activeData.entries.size,
-                storagePath = root,
-            )
+            SearchBar(query = query, onQuery = { query = it }, onClear = { query = "" })
             Spacer(Modifier.height(6.dp))
-        }
 
-        if (batch.items.isNotEmpty()) {
-            BatchPill(batch = batch, onClick = { showBatch = true })
-            Spacer(Modifier.height(6.dp))
-        }
+            if (granted) {
+                PathCard(
+                    title = activePane.category?.let { "All ${it.label.lowercase()}" }
+                        ?: pathTitle(context, activePane.path),
+                    itemCount = activeData.entries.size,
+                    storagePath = root,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
 
-        message?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodySmall,
-                color = CronosCyan,
-                modifier = Modifier.padding(bottom = 6.dp),
-            )
-        }
+            if (batch.items.isNotEmpty()) {
+                BatchPill(batch = batch, onClick = { showBatch = true })
+                Spacer(Modifier.height(6.dp))
+            }
 
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            when {
-                !granted -> PermissionCard(
-                    onAllow = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            requestAllFilesAccess(context)
-                        } else {
-                            val perms = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            message?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CronosCyan,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            }
+
+    }
+
+    // File panes and the bars under them. In landscape they take the right side.
+    val panes: @Composable ColumnScope.() -> Unit = {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                when {
+                    !granted -> PermissionCard(
+                        onAllow = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                requestAllFilesAccess(context)
                             } else {
-                                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                                val perms = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                                    arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                } else {
+                                    arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                                }
+                                legacyPermission.launch(perms)
                             }
-                            legacyPermission.launch(perms)
-                        }
-                    },
-                )
-                query.isNotBlank() -> SearchPanel(
-                    query = query,
-                    results = searchResults,
-                    searching = searching,
-                    suggestions = suggestions,
-                    onPickPath = { openSearchPath(it) },
-                    onPickItem = { openSearchItem(it) },
-                    modifier = Modifier.fillMaxSize(),
-                )
-                split -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
-                    PaneView(
+                        },
+                    )
+                    query.isNotBlank() -> SearchPanel(
+                        query = query,
+                        results = searchResults,
+                        searching = searching,
+                        suggestions = suggestions,
+                        onPickPath = { openSearchPath(it) },
+                        onPickItem = { openSearchItem(it) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    split -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
+                        PaneView(
+                            pane = paneA,
+                            data = dataA,
+                            sel = sel,
+                            sortMode = sortMode,
+                            descending = descending,
+                            onCycleSort = {
+                                val modes = SortMode.entries
+                                sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
+                            },
+                            onToggleDirection = { descending = !descending },
+                            compact = true,
+                            highlighted = activeIndex == 0,
+                            hasUp = upA != null,
+                            onActivate = { activeIndex = 0 },
+                            onNavigate = { navigate(paneA, it) },
+                            onUp = { up(paneA) },
+                            onOpenArchive = onOpenArchive,
+                            onEditText = { editingTextItem = it },
+                            onMessage = { message = it },
+                            onChanged = { refresh++ },
+                            onClipboard = { paths, cut -> setClipboard(paths, cut) },
+                            onDelete = { deletePaths(it) },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        PaneView(
+                            pane = paneB,
+                            data = dataB,
+                            sel = sel,
+                            sortMode = sortMode,
+                            descending = descending,
+                            onCycleSort = {
+                                val modes = SortMode.entries
+                                sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
+                            },
+                            onToggleDirection = { descending = !descending },
+                            compact = true,
+                            highlighted = activeIndex == 1,
+                            hasUp = upB != null,
+                            onActivate = { activeIndex = 1 },
+                            onNavigate = { navigate(paneB, it) },
+                            onUp = { up(paneB) },
+                            onOpenArchive = onOpenArchive,
+                            onEditText = { editingTextItem = it },
+                            onMessage = { message = it },
+                            onChanged = { refresh++ },
+                            onClipboard = { paths, cut -> setClipboard(paths, cut) },
+                            onDelete = { deletePaths(it) },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
+                    else -> PaneView(
                         pane = paneA,
                         data = dataA,
                         sel = sel,
@@ -1009,10 +1065,10 @@ fun FileManagerScreen(
                             sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
                         },
                         onToggleDirection = { descending = !descending },
-                        compact = true,
-                        highlighted = activeIndex == 0,
+                        compact = false,
+                        highlighted = false,
                         hasUp = upA != null,
-                        onActivate = { activeIndex = 0 },
+                        onActivate = {},
                         onNavigate = { navigate(paneA, it) },
                         onUp = { up(paneA) },
                         onOpenArchive = onOpenArchive,
@@ -1021,145 +1077,130 @@ fun FileManagerScreen(
                         onChanged = { refresh++ },
                         onClipboard = { paths, cut -> setClipboard(paths, cut) },
                         onDelete = { deletePaths(it) },
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    PaneView(
-                        pane = paneB,
-                        data = dataB,
-                        sel = sel,
-                        sortMode = sortMode,
-                        descending = descending,
-                        onCycleSort = {
-                            val modes = SortMode.entries
-                            sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
-                        },
-                        onToggleDirection = { descending = !descending },
-                        compact = true,
-                        highlighted = activeIndex == 1,
-                        hasUp = upB != null,
-                        onActivate = { activeIndex = 1 },
-                        onNavigate = { navigate(paneB, it) },
-                        onUp = { up(paneB) },
-                        onOpenArchive = onOpenArchive,
-                        onEditText = { editingTextItem = it },
-                        onMessage = { message = it },
-                        onChanged = { refresh++ },
-                        onClipboard = { paths, cut -> setClipboard(paths, cut) },
-                        onDelete = { deletePaths(it) },
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
-                else -> PaneView(
-                    pane = paneA,
-                    data = dataA,
-                    sel = sel,
-                    sortMode = sortMode,
-                    descending = descending,
-                    onCycleSort = {
-                        val modes = SortMode.entries
-                        sortMode = modes[(modes.indexOf(sortMode) + 1) % modes.size]
+            }
+
+            sel.progress?.let { p ->
+                Spacer(Modifier.height(10.dp))
+                TransferBar(p = p, onCancel = { FileTransfer.cancel() })
+            }
+
+            sel.clipboard?.let { clip ->
+                Spacer(Modifier.height(10.dp))
+                PasteBar(
+                    count = clip.paths.size,
+                    cut = clip.cut,
+                    destination = if (activePane.category == null) {
+                        pathTitle(context, activePane.path)
+                    } else {
+                        "Open a folder to paste into"
                     },
-                    onToggleDirection = { descending = !descending },
-                    compact = false,
-                    highlighted = false,
-                    hasUp = upA != null,
-                    onActivate = {},
-                    onNavigate = { navigate(paneA, it) },
-                    onUp = { up(paneA) },
-                    onOpenArchive = onOpenArchive,
-                    onEditText = { editingTextItem = it },
-                    onMessage = { message = it },
-                    onChanged = { refresh++ },
-                    onClipboard = { paths, cut -> setClipboard(paths, cut) },
-                    onDelete = { deletePaths(it) },
-                    modifier = Modifier.fillMaxSize(),
+                    canPaste = activePane.category == null,
+                    onPaste = { pasteClipboard() },
+                    onCancel = {
+                        sel.clipboard = null
+                        message = "Cancelled."
+                    },
                 )
             }
-        }
 
-        sel.progress?.let { p ->
-            Spacer(Modifier.height(10.dp))
-            TransferBar(p = p, onCancel = { FileTransfer.cancel() })
-        }
-
-        sel.clipboard?.let { clip ->
-            Spacer(Modifier.height(10.dp))
-            PasteBar(
-                count = clip.paths.size,
-                cut = clip.cut,
-                destination = if (activePane.category == null) {
-                    pathTitle(context, activePane.path)
-                } else {
-                    "Open a folder to paste into"
-                },
-                canPaste = activePane.category == null,
-                onPaste = { pasteClipboard() },
-                onCancel = {
-                    sel.clipboard = null
-                    message = "Cancelled."
-                },
-            )
-        }
-
-        if (sel.selecting) {
-            Spacer(Modifier.height(10.dp))
-            SelectionDock(
-                count = sel.selected.size,
-                archiveCount = sel.selected.count { isLocalArchive(it) },
-                split = split,
-                sideLabel = if (activeIndex == 0) "right" else "left",
-                onSelectAll = {
-                    activeData.entries.forEach { item ->
-                        if (item.path !in sel.selected) sel.selected.add(item.path)
-                    }
-                    message = "Selected ${sel.selected.size} item(s)."
-                },
-                onCopy = {
-                    if (split) transferSelected(false, destPane) else takeSelection(false)
-                },
-                onMove = {
-                    if (split) transferSelected(true, destPane) else takeSelection(true)
-                },
-                onZip = {
-                    if (sel.selected.isEmpty()) {
-                        message = "Tap items to select them first."
-                    } else if (activePane.category != null) {
-                        message = "Open a folder first to save the zip."
-                    } else {
-                        zipInputs = sel.selected.filter { !SafStorage.isSaf(it) }
-                        showCompress = true
-                    }
-                },
-                onExtract = {
-                    val archives = sel.selected.filter { isLocalArchive(it) }
-                    if (sel.selected.isEmpty()) {
-                        message = "Tap items to select them first."
-                    } else if (archives.isEmpty()) {
-                        message = "Select archive files (zip, 7z, tar, rar) on phone storage to extract."
-                    } else if (batch.running || viewModel.extraction.value.running) {
-                        message = "Another extraction is running. Wait for it to finish."
-                    } else {
-                        val s = viewModel.settings
-                        BatchExtractor.start(archives, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault)
+            if (sel.selecting) {
+                Spacer(Modifier.height(10.dp))
+                SelectionDock(
+                    count = sel.selected.size,
+                    archiveCount = sel.selected.count { isLocalArchive(it) },
+                    split = split,
+                    sideLabel = if (activeIndex == 0) "right" else "left",
+                    onSelectAll = {
+                        activeData.entries.forEach { item ->
+                            if (item.path !in sel.selected) sel.selected.add(item.path)
+                        }
+                        message = "Selected ${sel.selected.size} item(s)."
+                    },
+                    onCopy = {
+                        if (split) transferSelected(false, destPane) else takeSelection(false)
+                    },
+                    onMove = {
+                        if (split) transferSelected(true, destPane) else takeSelection(true)
+                    },
+                    onZip = {
+                        if (sel.selected.isEmpty()) {
+                            message = "Tap items to select them first."
+                        } else if (activePane.category != null) {
+                            message = "Open a folder first to save the zip."
+                        } else {
+                            zipInputs = sel.selected.filter { !SafStorage.isSaf(it) }
+                            showCompress = true
+                        }
+                    },
+                    onExtract = {
+                        val archives = sel.selected.filter { isLocalArchive(it) }
+                        if (sel.selected.isEmpty()) {
+                            message = "Tap items to select them first."
+                        } else if (archives.isEmpty()) {
+                            message = "Select archive files (zip, 7z, tar, rar) on phone storage to extract."
+                        } else if (batch.running || viewModel.extraction.value.running) {
+                            message = "Another extraction is running. Wait for it to finish."
+                        } else {
+                            val s = viewModel.settings
+                            BatchExtractor.start(archives, s.keepArchiveByDefault, s.keepFreeBytes, s.verifyFirstByDefault)
+                            sel.selecting = false
+                            sel.selected.clear()
+                            showBatch = true
+                        }
+                    },
+                    onDelete = {
+                        if (sel.selected.isEmpty()) {
+                            message = "Tap items to select them first."
+                        } else {
+                            confirmDelete = true
+                        }
+                    },
+                    onDone = {
                         sel.selecting = false
                         sel.selected.clear()
-                        showBatch = true
-                    }
-                },
-                onDelete = {
-                    if (sel.selected.isEmpty()) {
-                        message = "Tap items to select them first."
-                    } else {
-                        confirmDelete = true
-                    }
-                },
-                onDone = {
-                    sel.selecting = false
-                    sel.selected.clear()
-                },
-            )
+                    },
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+    }
+
+    if (landscape) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .safeDrawingPadding()
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(0.42f)
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                header()
+            }
+            Column(
+                modifier = Modifier
+                    .weight(0.58f)
+                    .fillMaxHeight(),
+            ) {
+                panes()
+            }
         }
-        Spacer(Modifier.height(12.dp))
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .safeDrawingPadding()
+                .padding(horizontal = 16.dp),
+        ) {
+            header()
+            panes()
+        }
     }
 
     editingTextItem?.let { target ->
@@ -1678,137 +1719,6 @@ private fun PaneView(
                             val path = target.path
                             deleteItem = null
                             onDelete(listOf(path))
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** Built-in Text Viewer & Editor Dialog with proper padding and weight so buttons are never cut off. */
-@Composable
-private fun TextEditorDialog(
-    item: FileItem,
-    onSaved: () -> Unit,
-    onError: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var text by remember { mutableStateOf("") }
-    var loading by remember { mutableStateOf(true) }
-    var saving by remember { mutableStateOf(false) }
-    var loadError by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(item.path) {
-        loading = true
-        loadError = null
-        val res = withContext(Dispatchers.IO) { readTextItem(context, item) }
-        res.onSuccess { text = it }
-            .onFailure { loadError = it.message ?: "Could not read this file as text." }
-        loading = false
-    }
-
-    Dialog(
-        onDismissRequest = { if (!saving) onDismiss() },
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(if (AppPrefs.amoled) Color.Black else Color(0xFF07101E))
-                .safeDrawingPadding()
-                .padding(16.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .glassSurface(24.dp)
-                    .padding(16.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "TEXT & CONFIG EDITOR",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = CronosCyan,
-                            letterSpacing = 1.2.sp,
-                        )
-                        Text(
-                            text = item.name,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = TextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    IconButton(onClick = { if (!saving) onDismiss() }) {
-                        Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextPrimary)
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(GlassWhite.copy(alpha = 0.04f))
-                        .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
-                        .padding(12.dp),
-                ) {
-                    when {
-                        loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = CronosCyan, strokeWidth = 2.dp)
-                        }
-                        loadError != null -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(text = loadError.orEmpty(), color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
-                        }
-                        else -> BasicTextField(
-                            value = text,
-                            onValueChange = { text = it },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState()),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                color = TextPrimary,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp,
-                                lineHeight = 19.sp,
-                            ),
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SecondaryButton(
-                        text = "Cancel",
-                        modifier = Modifier.weight(1f),
-                        onClick = { if (!saving) onDismiss() },
-                    )
-                    PrimaryButton(
-                        text = if (saving) "Saving…" else "Save changes",
-                        modifier = Modifier.weight(1f),
-                        enabled = !loading && !saving && loadError == null,
-                        onClick = {
-                            saving = true
-                            val updated = text
-                            scope.launch {
-                                val res = withContext(Dispatchers.IO) { writeTextItem(context, item, updated) }
-                                saving = false
-                                res.onSuccess {
-                                    onSaved()
-                                    onDismiss()
-                                }.onFailure { err ->
-                                    onError(err.message ?: "Could not save changes.")
-                                }
-                            }
                         },
                     )
                 }
@@ -2477,32 +2387,6 @@ private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
 }
 
 @Composable
-private fun ChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (selected) TextPrimary else TextSecondary,
-            modifier = Modifier.weight(1f),
-        )
-        if (selected) {
-            Icon(
-                imageVector = Icons.Rounded.Check,
-                contentDescription = null,
-                tint = CronosCyan,
-                modifier = Modifier.size(20.dp),
-            )
-        }
-    }
-}
-
-@Composable
 private fun UpRow(compact: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
@@ -2550,4 +2434,109 @@ private fun EntryRow(
                     imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
                     contentDescription = null,
                     tint = if (checked) CronosCyan else TextSecondary,
-                    modifier = Modifier.size(if (compact) 16.dp else 20.dp)
+                    modifier = Modifier.size(if (compact) 16.dp else 20.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            FileThumb(item = item, size = if (compact) 30.dp else 40.dp)
+            Spacer(Modifier.width(if (compact) 8.dp else 12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.name,
+                    style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
+                    color = TextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (!selecting) {
+                if (!compact && item.directory) {
+                    Icon(
+                        imageVector = Icons.Rounded.ChevronRight,
+                        contentDescription = null,
+                        tint = TextSecondary.copy(alpha = 0.5f),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                if (compact) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onMore),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "File actions",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                } else {
+                    IconButton(onClick = onMore, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "File actions",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        }
+        if (divider) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = if (compact) 36.dp else 56.dp)
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.06f)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun NewFileDialog(
+    dir: String,
+    onResult: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var name by remember { mutableStateOf("New file.txt") }
+    var busy by remember { mutableStateOf(false) }
+    val extensions = listOf(".txt", ".ini", ".cfg", ".json", ".md", ".log", ".xml", ".sh")
+
+    Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
+        SolidDialogCard(glow = CronosCyan) {
+            Text("New file", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "The file is created in the folder you are viewing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("File name", color = TextSecondary) },
+                singleLine = true,
+            )
+            Spacer(Modifier.height(10.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(extensions) { extension ->
+                    GlassChip(
+                        text = extension,
+                        onClick = { name = name.substringBeforeLast(".", name) + extension },
+                    )
