@@ -11,13 +11,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.cronoszip.app.data.AppPrefs
+import com.cronoszip.app.data.ThemeMode
+import com.cronoszip.app.ui.theme.SolidSurface
+import com.cronoszip.app.ui.theme.SolidSurfaceRim
 
 /**
- * A liquid-glass panel: a translucent, light-catching surface with a bright rim that fades out.
- * In AMOLED mode it becomes solid black with a faint rim, so the look stays consistent.
+ * The app's panel surface. Normally a translucent liquid-glass panel with a bright rim.
+ * Pure Material You swaps it for a solid Material 3 container, and AMOLED makes it solid black.
  */
 fun Modifier.liquidGlass(radius: Dp = 22.dp): Modifier {
     val shape = RoundedCornerShape(radius)
+    if (AppPrefs.themeMode == ThemeMode.PureMaterial) {
+        return this
+            .clip(shape)
+            .background(SolidSurface)
+            .border(BorderStroke(1.dp, SolidSurfaceRim), shape)
+    }
     if (AppPrefs.amoled) {
         return this
             .clip(shape)
