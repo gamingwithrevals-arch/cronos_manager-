@@ -14,8 +14,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.cronoszip.app.data.AppPrefs
 import com.cronoszip.app.data.ThemeMode
-import com.cronoszip.app.data.ThemePrefs
 
 /** The four accent colours that the theme controls. */
 private data class AccentSet(
@@ -128,10 +128,10 @@ private val CronosShapes = Shapes(
 @Composable
 fun CronosZipTheme(content: @Composable () -> Unit) {
     val context = LocalContext.current
-    remember(context) { ThemePrefs.load(context) }
-    val mode = ThemePrefs.mode
-    val customArgb = ThemePrefs.customArgb
-    val scheme = remember(mode, customArgb) { buildTheme(context, mode, customArgb) }
+    remember(context) { AppPrefs.load(context) }
+    val mode = AppPrefs.themeMode
+    val customArgb = AppPrefs.customThemeColor
+    val scheme = remember(context, mode, customArgb) { buildTheme(context, mode, customArgb) }
     MaterialTheme(
         colorScheme = scheme,
         typography = CronosTypography,
