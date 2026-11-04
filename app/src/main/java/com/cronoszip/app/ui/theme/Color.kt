@@ -23,3 +23,7 @@ val TextSecondary = Color(0xFFA9BEDB)
 val Success = Color(0xFF4ADE80)
 val Warning = Color(0xFFFFC857)
 val Danger = Color(0xFFFF6B6B)
+
+/** Solid panel colours for the Pure Material You theme. Set by the theme engine. */
+var SolidSurface by mutableStateOf(Color(0xFF081A30))
+var SolidSurfaceRim by mutableStateOf(Color(0x33FFFFFF))
