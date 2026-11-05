@@ -1,5 +1,6 @@
 package com.cronoszip.app.lan
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,14 +9,16 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.cronoszip.app.util.hasStorageAccess
 import java.net.Inet4Address
 import java.net.NetworkInterface
-import java.security.SecureRandom
 import java.util.Collections
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,8 +32,6 @@ object LanShare {
         val running: Boolean = false,
         val addresses: List<String> = emptyList(),
         val port: Int = DEFAULT_PORT,
-        val username: String = "",
-        val password: String = "",
         val error: String? = null,
     )
 
@@ -43,11 +44,14 @@ object LanShare {
 }
 
 /**
- * Runs the FTP share in the foreground so it keeps working while the app is in the background.
- * A notification with a Stop button stays visible while sharing is on.
+ * Runs the share as a foreground service so it keeps working with the screen off or the app in
+ * the background. A partial wake lock and a Wi-Fi lock keep the connection alive while sharing.
+ * Both locks are released when sharing stops.
  */
 class LanServerService : Service() {
     private var server: FtpServer? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -58,7 +62,8 @@ class LanServerService : Service() {
             return START_NOT_STICKY
         }
         if (server == null) startSharing()
-        return START_NOT_STICKY
+        // Restart automatically if the system kills the service.
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -68,43 +73,79 @@ class LanServerService : Service() {
 
     private fun startSharing() {
         ensureChannel()
-        val password = randomPassword()
-        val port = LanShare.DEFAULT_PORT
-        val addresses = localAddresses()
-        // startForeground must be called promptly after startForegroundService.
-        val text = addresses.firstOrNull()?.let { "$it:$port" } ?: "no network address"
-        val notification = notification(text)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-        try {
-            val root = Environment.getExternalStorageDirectory()
-            server = FtpServer(root, USERNAME, password, port).also { it.start() }
+        // startForeground must be called right away, or Android stops the service with an error.
+        promoteToForeground(notification("Starting…"))
+
+        if (!hasStorageAccess(this)) {
+            release()
             LanShare.publish(
                 LanShare.Status(
-                    running = true,
-                    addresses = addresses,
-                    port = port,
-                    username = USERNAME,
-                    password = password,
+                    error = "Turn on All files access first. Without it, other phones only see folders.",
                 ),
             )
+            stopSelf()
+            return
+        }
+
+        val port = LanShare.DEFAULT_PORT
+        val addresses = localAddresses()
+        try {
+            val root = Environment.getExternalStorageDirectory()
+            server = FtpServer(root, port).also { it.start() }
+            acquireLocks()
+            promoteToForeground(notification(addresses.firstOrNull()?.let { "$it:$port" } ?: "no network address"))
+            LanShare.publish(LanShare.Status(running = true, addresses = addresses, port = port))
         } catch (e: Exception) {
+            release()
             LanShare.publish(LanShare.Status(error = "Could not start sharing: ${e.message ?: "unknown error"}"))
             stopSelf()
         }
     }
 
     private fun stopSharing() {
-        server?.close()
-        server = null
+        release()
         LanShare.publish(LanShare.Status())
+    }
+
+    /** Closes the server, releases the locks and removes the notification. Does not touch the status. */
+    private fun release() {
+        runCatching { server?.close() }
+        server = null
+        runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
+        wakeLock = null
+        runCatching { wifiLock?.let { if (it.isHeld) it.release() } }
+        wifiLock = null
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
-    private fun notification(address: String): Notification {
+    @SuppressLint("WakelockTimeout")
+    private fun acquireLocks() {
+        val power = getSystemService(PowerManager::class.java)
+        wakeLock = power?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CronosZip:lan")?.apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        val wifi = applicationContext.getSystemService(WifiManager::class.java)
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifiLock = wifi?.createWifiLock(mode, "CronosZip:lan")?.apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun promoteToForeground(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun notification(text: String): Notification {
         val open = packageManager.getLaunchIntentForPackage(packageName)?.let {
             PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
@@ -117,7 +158,7 @@ class LanServerService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle("Sharing files on the local network")
-            .setContentText("Other phones can connect to $address")
+            .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -133,13 +174,6 @@ class LanServerService : Service() {
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "LAN sharing", NotificationManager.IMPORTANCE_LOW),
         )
-    }
-
-    private fun randomPassword(): String {
-        val random = SecureRandom()
-        return buildString {
-            repeat(8) { append(ALPHABET[random.nextInt(ALPHABET.length)]) }
-        }
     }
 
     /** IPv4 addresses this phone can be reached on: Wi-Fi, hotspot, or both. */
@@ -158,8 +192,6 @@ class LanServerService : Service() {
         const val ACTION_STOP = "com.cronoszip.app.lan.STOP_SHARING"
         private const val CHANNEL_ID = "lan_share"
         private const val NOTIFICATION_ID = 4201
-        private const val USERNAME = "cronos"
-        private const val ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, LanServerService::class.java))
