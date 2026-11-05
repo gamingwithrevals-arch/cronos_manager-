@@ -5,7 +5,9 @@ import java.io.BufferedWriter
 import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.net.Inet4Address
 import java.net.InetSocketAddress
@@ -18,15 +20,16 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** Buffer size for every file read and write, both sending and receiving. */
+const val TRANSFER_BUFFER = 256 * 1024
+
 /**
- * A small FTP server that shares one folder tree on the local network. It supports what a
- * file-manager client needs: browsing, download, upload, delete, rename and mkdir. Passive mode
- * only. Each session must log in with the username and password this server was started with.
+ * A small FTP server that shares one folder tree on the local network.
+ * Login is open: any username and password are accepted, so another phone only needs the
+ * IP address and port. Passive mode only.
  */
 class FtpServer(
     private val root: File,
-    private val username: String,
-    private val password: String,
     private val port: Int,
 ) : Closeable {
     private val running = AtomicBoolean(false)
@@ -54,7 +57,7 @@ class FtpServer(
             } catch (e: Exception) {
                 break
             }
-            pool.execute { FtpSession(client, root, username, password).run() }
+            pool.execute { FtpSession(client, root).run() }
         }
     }
 
@@ -70,12 +73,9 @@ class FtpServer(
 private class FtpSession(
     private val control: Socket,
     private val root: File,
-    private val username: String,
-    private val password: String,
 ) {
     private val reader = BufferedReader(InputStreamReader(control.getInputStream(), Charsets.UTF_8))
     private val writer = BufferedWriter(OutputStreamWriter(control.getOutputStream(), Charsets.UTF_8))
-    private var pendingUser: String? = null
     private var loggedIn = false
     private var cwd = "/"
     private var passive: ServerSocket? = null
@@ -83,7 +83,9 @@ private class FtpSession(
 
     fun run() {
         try {
-            control.soTimeout = 300_000
+            control.tcpNoDelay = true
+            control.keepAlive = true
+            control.soTimeout = 600_000
             reply(220, "CronosZip LAN share ready")
             while (true) {
                 val line = reader.readLine() ?: break
@@ -103,13 +105,10 @@ private class FtpSession(
     /** Returns false when the session should end. */
     private fun handle(command: String, argument: String): Boolean {
         when (command) {
-            "USER" -> {
-                pendingUser = argument
-                reply(331, "Password required")
-            }
+            "USER" -> reply(331, "Any password works")
             "PASS" -> {
-                loggedIn = pendingUser == username && argument == password
-                if (loggedIn) reply(230, "Logged in") else reply(530, "Login incorrect")
+                loggedIn = true
+                reply(230, "Logged in")
             }
             "QUIT" -> {
                 reply(221, "Goodbye")
@@ -188,14 +187,22 @@ private class FtpSession(
             reply(550, "No such folder")
             return
         }
-        val children = folder.listFiles()?.sortedBy { it.name.lowercase(Locale.ROOT) }.orEmpty()
+        // Every file and every hidden file is listed. A null result means Android denied access.
+        val children = folder.listFiles()
+        if (children == null) {
+            reply(550, "Cannot read this folder. Turn on All files access on the phone that is sharing.")
+            return
+        }
+        val sorted = children.sortedBy { it.name.lowercase(Locale.ROOT) }
         val text = buildString {
-            for (child in children) {
+            for (child in sorted) {
                 append(if (namesOnly) child.name else unixLine(child)).append("\r\n")
             }
         }
         data("Opening data connection for the listing", "Listing sent") { socket ->
-            sendText(socket, text)
+            val output = socket.getOutputStream()
+            output.write(text.toByteArray(Charsets.UTF_8))
+            output.flush()
         }
     }
 
@@ -206,8 +213,7 @@ private class FtpSession(
             return
         }
         data("Opening data connection for ${file.name}", "Download complete") { socket ->
-            file.inputStream().use { input -> input.copyTo(socket.getOutputStream()) }
-            socket.getOutputStream().flush()
+            file.inputStream().use { input -> pump(input, socket.getOutputStream()) }
         }
     }
 
@@ -219,7 +225,7 @@ private class FtpSession(
         }
         data("Ready to receive ${file.name}", "Upload complete") { socket ->
             try {
-                FileOutputStream(file).use { output -> socket.getInputStream().copyTo(output) }
+                FileOutputStream(file).use { output -> pump(socket.getInputStream(), output) }
             } catch (e: Exception) {
                 file.delete()
                 throw e
@@ -255,7 +261,11 @@ private class FtpSession(
         try {
             server.use { listener ->
                 listener.accept().use { socket ->
-                    socket.soTimeout = 60_000
+                    socket.soTimeout = 120_000
+                    socket.tcpNoDelay = true
+                    socket.keepAlive = true
+                    socket.sendBufferSize = TRANSFER_BUFFER
+                    socket.receiveBufferSize = TRANSFER_BUFFER
                     transfer(socket)
                 }
             }
@@ -265,9 +275,13 @@ private class FtpSession(
         }
     }
 
-    private fun sendText(socket: Socket, text: String) {
-        val output = socket.getOutputStream()
-        output.write(text.toByteArray(Charsets.UTF_8))
+    private fun pump(input: InputStream, output: OutputStream) {
+        val buffer = ByteArray(TRANSFER_BUFFER)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            output.write(buffer, 0, read)
+        }
         output.flush()
     }
 
