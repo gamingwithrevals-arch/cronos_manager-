@@ -64,6 +64,7 @@ import com.cronoszip.app.ui.components.SolidDialogCard
 import com.cronoszip.app.ui.screens.ArchiveDetailsScreen
 import com.cronoszip.app.ui.screens.ArchiveViewerScreen
 import com.cronoszip.app.ui.screens.ExtractSetupScreen
+import com.cronoszip.app.ui.screens.LanTransferScreen
 import com.cronoszip.app.ui.screens.ExtractingScreen
 import com.cronoszip.app.ui.screens.FileBrowserScreen
 import com.cronoszip.app.ui.screens.FileManagerScreen
@@ -89,6 +90,7 @@ private object Routes {
     const val Files = "files"
     const val Update = "update"
     const val ThemePicker = "theme"
+    const val Lan = "lan"
     const val ArchivePattern = "archive/{path}"
     fun browser(mode: BrowserMode) = "browser/${mode.name}"
     fun archiveView(path: String) = "archive/${Uri.encode(path)}"
@@ -304,7 +306,12 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                     onBack = { nav.popBackStack() },
                     onOpenFiles = { nav.navigate(Routes.Files) },
                     onOpenUpdate = { nav.navigate(Routes.Update) },
+                    onOpenLan = { nav.navigate(Routes.Lan) },
                 )
+            }
+
+            composable(Routes.Lan) {
+                LanTransferScreen(onBack = { nav.popBackStack() })
             }
 
             composable(Routes.Update) {
