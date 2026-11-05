@@ -90,6 +90,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenFiles: () -> Unit = {},
     onOpenUpdate: () -> Unit = {},
+    onOpenLan: () -> Unit = {},
 ) {
     val settings = viewModel.settings
     val history = viewModel.history
@@ -222,6 +223,21 @@ fun SettingsScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Files", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
                             Text("One file manager with list and split view, plus app storage shortcuts", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        }
+                        Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, tint = TextSecondary)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable(onClick = onOpenLan),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Rounded.Folder, contentDescription = null, tint = CronosCyan, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("LAN transfer", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                            Text("Copy or move files between two phones on the same Wi-Fi or hotspot", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                         }
                         Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, tint = TextSecondary)
                     }
@@ -549,4 +565,3 @@ private fun HistoryRow(entry: HistoryEntry, onClick: () -> Unit) {
         )
     }
 }
-
