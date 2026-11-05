@@ -64,6 +64,11 @@
             android:windowSoftInputMode="adjustResize" />
 
         <service
+            android:name=".lan.LanServerService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
             android:name=".service.ExtractionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
