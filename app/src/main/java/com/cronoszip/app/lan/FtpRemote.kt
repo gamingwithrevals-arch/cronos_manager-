@@ -41,8 +41,6 @@ class FtpRemote(
         defaultTimeout = 60_000
         controlEncoding = "UTF-8"
         setBufferSize(TRANSFER_BUFFER)
-        setTcpNoDelay(true)
-        setKeepAlive(true)
     }
 
     /** Connects and logs in anonymously. Retries a few times on a flaky Wi-Fi link. */
@@ -52,6 +50,9 @@ class FtpRemote(
             client = newClient()
             try {
                 client.connect(host, port)
+                // Socket options need a live socket, so they are set only after connecting.
+                client.setTcpNoDelay(true)
+                client.setKeepAlive(true)
                 if (!FTPReply.isPositiveCompletion(client.replyCode)) {
                     throw IOException("The other phone did not answer. Check the address.")
                 }
