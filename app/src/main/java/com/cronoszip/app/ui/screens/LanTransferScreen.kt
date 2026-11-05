@@ -36,9 +36,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.cronoszip.app.data.FileClipboard
 import com.cronoszip.app.lan.FtpRemote
 import com.cronoszip.app.lan.LanServerService
@@ -55,6 +58,8 @@ import com.cronoszip.app.ui.theme.Danger
 import com.cronoszip.app.ui.theme.TextPrimary
 import com.cronoszip.app.ui.theme.TextSecondary
 import com.cronoszip.app.util.formatBytes
+import com.cronoszip.app.util.hasStorageAccess
+import com.cronoszip.app.util.requestAllFilesAccess
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -66,8 +71,20 @@ private enum class LanTab { Share, Connect }
 @Composable
 fun LanTransferScreen(onBack: () -> Unit) {
     val context = LocalContext.current
+    val view = LocalView.current
     val scope = rememberCoroutineScope()
     val status by LanShare.status.collectAsState()
+
+    // All files access is re-checked each time the screen comes back to the foreground.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var storageOk by remember { mutableStateOf(hasStorageAccess(context)) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) storageOk = hasStorageAccess(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var tab by remember { mutableStateOf(LanTab.Share) }
     var busy by remember { mutableStateOf(false) }
@@ -75,13 +92,17 @@ fun LanTransferScreen(onBack: () -> Unit) {
 
     var host by remember { mutableStateOf("") }
     var portText by remember { mutableStateOf(LanShare.DEFAULT_PORT.toString()) }
-    var user by remember { mutableStateOf("cronos") }
-    var pass by remember { mutableStateOf("") }
 
     var remote by remember { mutableStateOf<FtpRemote?>(null) }
     var remotePath by remember { mutableStateOf("/") }
     var entries by remember { mutableStateOf<List<RemoteEntry>>(emptyList()) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    // Keep the screen on only while a transfer runs, then let it sleep again.
+    DisposableEffect(busy) {
+        view.keepScreenOn = busy
+        onDispose { view.keepScreenOn = false }
+    }
 
     // Closing the screen disconnects, but sharing keeps running in the service.
     DisposableEffect(Unit) {
@@ -120,7 +141,7 @@ fun LanTransferScreen(onBack: () -> Unit) {
     fun connectNow() = runTask {
         val port = portText.trim().toIntOrNull() ?: throw IOException("The port must be a number.")
         val connected = withContext(Dispatchers.IO) {
-            FtpRemote(host.trim(), port, user.trim(), pass).also { it.connect() }
+            FtpRemote(host.trim(), port).also { it.connect() }
         }
         remote?.let { old -> Thread { old.close() }.start() }
         remote = connected
@@ -190,6 +211,22 @@ fun LanTransferScreen(onBack: () -> Unit) {
             onBack = onBack,
         )
 
+        if (!storageOk) {
+            GlassCard(modifier = Modifier.fillMaxWidth(), glow = Danger) {
+                Text(
+                    text = "All files access is off. Without it, other phones only see folders, not files.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextPrimary,
+                )
+                Spacer(Modifier.height(12.dp))
+                PrimaryButton(
+                    text = "Turn on All files access",
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { requestAllFilesAccess(context) },
+                )
+            }
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             if (tab == LanTab.Share) {
                 PrimaryButton(text = "Share this phone", modifier = Modifier.weight(1f), onClick = { tab = LanTab.Share })
@@ -210,7 +247,7 @@ fun LanTransferScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 if (status.running) {
                     Text(
-                        text = "On the other phone, use one of these addresses:",
+                        text = "On the other phone, enter one of these addresses. No password is needed.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                     )
@@ -228,9 +265,6 @@ fun LanTransferScreen(onBack: () -> Unit) {
                             color = Danger,
                         )
                     }
-                    Spacer(Modifier.height(10.dp))
-                    Text("Username: ${status.username}", style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
-                    Text("Password: ${status.password}", style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
                     Spacer(Modifier.height(14.dp))
                     SecondaryButton(
                         text = "Stop sharing",
@@ -240,7 +274,7 @@ fun LanTransferScreen(onBack: () -> Unit) {
                 } else {
                     Text(
                         text = "On Phone A, turn on the hotspot (or join the same Wi-Fi) and tap Start sharing. " +
-                            "On Phone B, open Connect to phone and enter the address and login shown here.",
+                            "On Phone B, open Connect to phone and enter the address shown here.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                     )
@@ -248,6 +282,7 @@ fun LanTransferScreen(onBack: () -> Unit) {
                     PrimaryButton(
                         text = "Start sharing",
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = storageOk,
                         onClick = { LanServerService.start(context) },
                     )
                 }
@@ -257,7 +292,8 @@ fun LanTransferScreen(onBack: () -> Unit) {
                 }
             }
             Text(
-                text = "The connection is not encrypted. Only share on networks you trust.",
+                text = "Anyone on this network who knows the address can read and change files on this phone. " +
+                    "Only share on networks you trust.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
             )
@@ -272,7 +308,7 @@ fun LanTransferScreen(onBack: () -> Unit) {
                     OutlinedTextField(
                         value = host,
                         onValueChange = { host = it },
-                        label = { Text("Address") },
+                        label = { Text("IP address") },
                         placeholder = { Text("192.168.43.1") },
                         singleLine = true,
                         enabled = !busy,
@@ -289,31 +325,11 @@ fun LanTransferScreen(onBack: () -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = user,
-                        onValueChange = { user = it },
-                        label = { Text("Username") },
-                        singleLine = true,
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = pass,
-                        onValueChange = { pass = it },
-                        label = { Text("Password") },
-                        singleLine = true,
-                        enabled = !busy,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                     Spacer(Modifier.height(14.dp))
                     PrimaryButton(
                         text = if (busy) "Connecting…" else "Connect",
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !busy && host.isNotBlank() && pass.isNotEmpty(),
+                        enabled = !busy && host.isNotBlank(),
                         onClick = { connectNow() },
                     )
                 }
@@ -385,7 +401,11 @@ fun LanTransferScreen(onBack: () -> Unit) {
         }
 
         if (busy) {
-            Text("Working…", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            Text(
+                text = "Working… the screen stays on until this finishes.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
         }
         note?.let { message ->
             Text(message, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
