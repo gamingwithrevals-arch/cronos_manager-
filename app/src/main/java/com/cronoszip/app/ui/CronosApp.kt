@@ -212,6 +212,7 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
                     onExtract = { nav.navigate(Routes.browser(BrowserMode.Archive)) },
                     onSettings = { nav.navigate(Routes.Settings) },
                     onOpenTheme = { nav.navigate(Routes.ThemePicker) },
+                    onOpenLan = { nav.navigate(Routes.Lan) },
                 )
             }
 
