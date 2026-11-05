@@ -97,6 +97,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.cronoszip.app.data.AppPrefs
 import com.cronoszip.app.data.ArchiveProtection
 import com.cronoszip.app.data.BatchExtractor
+import com.cronoszip.app.ui.components.ArchivePasswordDialog
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.cronoszip.app.data.BatchItem
 import com.cronoszip.app.data.BatchState
 import com.cronoszip.app.data.BatchStatus
@@ -117,7 +122,6 @@ import com.cronoszip.app.data.SafTree
 import com.cronoszip.app.data.SortMode
 import com.cronoszip.app.data.TransferKind
 import com.cronoszip.app.data.TransferProgress
-import com.cronoszip.app.ui.components.ArchivePasswordDialog
 import com.cronoszip.app.ui.components.GlassCard
 import com.cronoszip.app.ui.components.GlassChip
 import com.cronoszip.app.ui.components.PrimaryButton
@@ -139,11 +143,7 @@ import com.cronoszip.app.util.hasStorageAccess
 import com.cronoszip.app.util.isArchive
 import com.cronoszip.app.util.requestAllFilesAccess
 import com.cronoszip.app.viewmodel.CronosViewModel
-import java.io.File
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /** Remembers which finished extraction the Files screen already jumped to. */
 private object ExtractionHint {
@@ -593,6 +593,7 @@ fun FileManagerScreen(
     onExtract: () -> Unit,
     onSettings: () -> Unit,
     onOpenTheme: () -> Unit = {},
+    onOpenLan: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1163,7 +1164,7 @@ fun FileManagerScreen(
                                 ArchiveProtection.protectedArchives(archives)
                             }
                             if (locked.isEmpty()) {
-                                startBatch(archives, emptyPasswords())
+                                startBatch(archives, emptyMap())
                             } else {
                                 batchArchives = archives
                                 batchPasswords = emptyPasswords()
@@ -1244,6 +1245,7 @@ fun FileManagerScreen(
             amoled = AppPrefs.amoled,
             onAmoled = { AppPrefs.setAmoled(context, it) },
             onTheme = onOpenTheme,
+            onLan = onOpenLan,
             onDismiss = { showOptions = false },
         )
     }
@@ -1263,7 +1265,7 @@ fun FileManagerScreen(
             wrong = batchPasswordWrong,
             busy = batchPasswordBusy,
             onCancel = {
-                // No password for this archive: the batch skips it with a reason.
+                // No password for this one: the batch skips it with a reason.
                 passwordQueue = passwordQueue.drop(1)
                 batchPasswordWrong = false
                 if (passwordQueue.isEmpty()) startBatch(batchArchives, batchPasswords)
@@ -1387,7 +1389,6 @@ fun FileManagerScreen(
         }
     }
 }
-
 /** One browsing pane: its rows, the item menus, and the folder, file, rename and delete dialogs. */
 @Composable
 private fun PaneView(
@@ -1779,6 +1780,7 @@ private fun PaneView(
         }
     }
 }
+
 /** The search panel: path jumps when the text starts with a slash, otherwise live file matches. */
 @Composable
 private fun SearchPanel(
@@ -2097,7 +2099,6 @@ private fun ModeSegment(label: String, selected: Boolean, modifier: Modifier, on
         )
     }
 }
-
 @Composable
 private fun BatchPill(batch: BatchState, onClick: () -> Unit) {
     Row(
@@ -2144,7 +2145,7 @@ private fun PermissionCard(onAllow: () -> Unit) {
             Text("Storage access is needed", style = MaterialTheme.typography.headlineSmall, color = TextPrimary)
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Cronos Manager needs access to read files and open archives.",
+                text = "Chronos Manager needs access to read files and open archives.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
             )
@@ -2311,6 +2312,7 @@ private fun OptionsDialog(
     amoled: Boolean,
     onAmoled: (Boolean) -> Unit,
     onTheme: () -> Unit,
+    onLan: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
@@ -2377,6 +2379,43 @@ private fun OptionsDialog(
                 )
             }
 
+            Spacer(Modifier.height(14.dp))
+            SectionTitle("Network")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onLan)
+                    .background(GlassWhite.copy(alpha = 0.03f))
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Folder,
+                    contentDescription = null,
+                    tint = CronosCyan,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "LAN transfer (FTP)",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary,
+                    )
+                    Text(
+                        text = "Share or copy files between two phones on Wi-Fi or hotspot",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                    contentDescription = null,
+                    tint = TextSecondary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             Spacer(Modifier.height(14.dp))
             SectionTitle("About")
             Text(
