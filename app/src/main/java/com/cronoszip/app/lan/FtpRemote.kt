@@ -27,45 +27,80 @@ fun remoteParent(path: String): String {
 }
 
 /**
- * A connection to a CronosZip share on another phone. Every call blocks, so run it on a
- * background thread.
+ * A connection to a CronosZip share on another phone. Only the IP address and port are needed.
+ * Every call blocks, so run it on a background thread. Failed operations reconnect and retry.
  */
 class FtpRemote(
     private val host: String,
     private val port: Int,
-    private val username: String,
-    private val password: String,
 ) : Closeable {
-    private val client = FTPClient()
+    private var client: FTPClient = newClient()
 
+    private fun newClient(): FTPClient = FTPClient().apply {
+        connectTimeout = 10_000
+        defaultTimeout = 60_000
+        controlEncoding = "UTF-8"
+        setBufferSize(TRANSFER_BUFFER)
+        setTcpNoDelay(true)
+        setKeepAlive(true)
+    }
+
+    /** Connects and logs in anonymously. Retries a few times on a flaky Wi-Fi link. */
     fun connect() {
-        client.connectTimeout = 10_000
-        client.defaultTimeout = 30_000
-        client.controlEncoding = "UTF-8"
-        client.connect(host, port)
-        if (!FTPReply.isPositiveCompletion(client.replyCode)) {
-            client.disconnect()
-            throw IOException("The other phone did not answer. Check the address and port.")
+        var lastError = IOException("Could not connect.")
+        for (attempt in 1..3) {
+            client = newClient()
+            try {
+                client.connect(host, port)
+                if (!FTPReply.isPositiveCompletion(client.replyCode)) {
+                    throw IOException("The other phone did not answer. Check the address.")
+                }
+                if (!client.login("anonymous", "")) {
+                    throw IOException("The other phone refused the connection.")
+                }
+                client.enterLocalPassiveMode()
+                client.setFileType(FTP.BINARY_FILE_TYPE)
+                return
+            } catch (e: IOException) {
+                lastError = e
+                runCatching { client.disconnect() }
+                Thread.sleep(800L * attempt)
+            }
         }
-        if (!client.login(username, password)) {
-            client.disconnect()
-            throw IOException("Wrong username or password.")
+        throw lastError
+    }
+
+    private fun reconnect() {
+        runCatching { client.disconnect() }
+        connect()
+    }
+
+    /** Runs [action]. If it fails with a network error, reconnects and tries again. */
+    private fun <T> withRetry(action: () -> T): T {
+        var lastError: IOException? = null
+        for (attempt in 1..3) {
+            try {
+                return action()
+            } catch (e: IOException) {
+                lastError = e
+                runCatching { reconnect() }
+                Thread.sleep(800L * attempt)
+            }
         }
-        client.enterLocalPassiveMode()
-        client.setFileType(FTP.BINARY_FILE_TYPE)
+        throw lastError ?: IOException("The transfer failed.")
     }
 
     fun currentDirectory(): String = client.printWorkingDirectory() ?: "/"
 
-    fun list(dir: String): List<RemoteEntry> {
+    fun list(dir: String): List<RemoteEntry> = withRetry {
         val files = client.listFiles(dir) ?: throw IOException("Could not read $dir")
-        return files
+        files
             .filter { it.name.isNotEmpty() && it.name != "." && it.name != ".." }
             .map { RemoteEntry(it.name, remoteJoin(dir, it.name), it.isDirectory, it.size) }
             .sortedWith(compareBy<RemoteEntry>({ !it.directory }, { it.name.lowercase() }))
     }
 
-    fun download(remotePath: String, target: File, onBytes: (Long) -> Unit) {
+    fun download(remotePath: String, target: File, onBytes: (Long) -> Unit) = withRetry {
         val input = client.retrieveFileStream(remotePath)
             ?: throw IOException("Could not read $remotePath")
         input.use { source ->
@@ -76,7 +111,7 @@ class FtpRemote(
         }
     }
 
-    fun upload(source: File, remotePath: String, onBytes: (Long) -> Unit) {
+    fun upload(source: File, remotePath: String, onBytes: (Long) -> Unit) = withRetry {
         val output = client.storeFileStream(remotePath)
             ?: throw IOException("Could not write $remotePath")
         output.use { target ->
@@ -87,20 +122,20 @@ class FtpRemote(
         }
     }
 
-    fun mkdir(path: String) {
+    fun mkdir(path: String) = withRetry {
         if (!client.makeDirectory(path)) throw IOException("Could not create folder $path")
     }
 
-    fun delete(path: String) {
+    fun delete(path: String) = withRetry {
         if (!client.deleteFile(path)) throw IOException("Could not delete $path")
     }
 
-    fun removeDirectory(path: String) {
+    fun removeDirectory(path: String) = withRetry {
         if (!client.removeDirectory(path)) throw IOException("Could not remove folder $path")
     }
 
     private fun copy(input: InputStream, output: OutputStream, onBytes: (Long) -> Unit) {
-        val buffer = ByteArray(64 * 1024)
+        val buffer = ByteArray(TRANSFER_BUFFER)
         var total = 0L
         while (true) {
             val read = input.read(buffer)
@@ -109,6 +144,7 @@ class FtpRemote(
             total += read
             onBytes(total)
         }
+        output.flush()
     }
 
     override fun close() {
