@@ -64,6 +64,12 @@
             android:theme="@style/Theme.CronosZip"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity
+            android:name=".ui.viewer.MediaPlayerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:exported="false"
+            android:theme="@style/Theme.CronosZip" />
+
         <service
             android:name=".lan.LanServerService"
             android:exported="false"
