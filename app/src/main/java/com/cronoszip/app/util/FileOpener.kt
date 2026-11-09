@@ -5,19 +5,27 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
+import com.cronoszip.app.ui.viewer.MediaKinds
+import com.cronoszip.app.ui.viewer.MediaPlayerActivity
 import com.cronoszip.app.ui.viewer.ViewerActivity
 import com.cronoszip.app.ui.viewer.ViewerTypes
 import java.io.File
 import java.util.Locale
 
 /**
- * Opens a local file. Text and photos open in Chronos Manager's own viewer. An .apk opens
- * Android's installer. Everything else opens in whichever app handles its type.
+ * Opens a local file. Video and music open in Chronos Manager's built-in player.
+ * Text and photos open in Chronos Manager's own viewer. An .apk opens Android's installer.
+ * Everything else opens in whichever app handles its type.
  */
 object FileOpener {
     fun open(context: Context, path: String): Result<Unit> = runCatching {
         val file = File(path)
         if (!file.isFile) throw IllegalArgumentException("This item is not a file.")
+
+        if (MediaKinds.isMedia(file.name)) {
+            openMedia(context, file)
+            return@runCatching
+        }
 
         if (ViewerTypes.isText(file.name) || ViewerTypes.isImage(file.name)) {
             context.startActivity(
@@ -43,6 +51,26 @@ object FileOpener {
         } catch (error: ActivityNotFoundException) {
             throw IllegalStateException("No app on this phone can open ${extension(file.name)} files.")
         }
+    }
+
+    /**
+     * Opens the built-in player. The queue is every file of the same kind (video or music)
+     * in the same folder, sorted by name, so Previous and Next move through that folder.
+     */
+    private fun openMedia(context: Context, file: File) {
+        val queue = file.parentFile
+            ?.listFiles { f -> f.isFile && MediaKinds.isSameKind(f.name, file.name) }
+            ?.sortedBy { it.name.lowercase(Locale.ROOT) }
+            ?.map { it.absolutePath }
+            ?: listOf(file.absolutePath)
+
+        context.startActivity(
+            Intent(context, MediaPlayerActivity::class.java).apply {
+                putExtra(MediaPlayerActivity.EXTRA_PATH, file.absolutePath)
+                putStringArrayListExtra(MediaPlayerActivity.EXTRA_PLAYLIST, ArrayList(queue))
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
     }
 
     fun mimeFor(name: String): String = mimeByExtension[extension(name)] ?: "*/*"
