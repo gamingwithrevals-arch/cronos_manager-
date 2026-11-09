@@ -686,6 +686,20 @@ fun FileManagerScreen(
         sel.selected.clear()
     }
 
+    // Opens the folder or category that a dashboard tile asked for.
+    val browseRequest = BrowseRequests.pending
+    LaunchedEffect(browseRequest) {
+        val request = browseRequest ?: return@LaunchedEffect
+        BrowseRequests.pending = null
+        activeIndex = 0
+        activePane.history.clear()
+        activePane.category = null
+        request.folder?.let { activePane.path = it }
+        request.category?.let { name ->
+            Category.entries.firstOrNull { it.name == name }?.let { jump(it) }
+        }
+    }
+
     fun openMount(uri: Uri) {
         activePane.history.clear()
         activePane.category = null
@@ -1922,7 +1936,6 @@ private fun SearchRow(icon: ImageVector, title: String, subtitle: String, onClic
         }
     }
 }
-
 /** A small label above a row of chips. */
 @Composable
 private fun FilesSectionLabel(text: String) {
@@ -2108,6 +2121,7 @@ private fun TopBar(title: String, split: Boolean, onToggleSplit: () -> Unit, onM
         }
     }
 }
+
 @Composable
 private fun BatchPill(batch: BatchState, onClick: () -> Unit) {
     Row(
@@ -2313,7 +2327,6 @@ private fun SelectionDock(
         }
     }
 }
-
 @Composable
 private fun OptionsDialog(
     showHidden: Boolean,
