@@ -89,5 +89,9 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.commons.net)
 
+    // Built-in video and music player (Media3 ExoPlayer, pure Kotlin/Java: no native build).
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
