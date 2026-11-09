@@ -40,9 +40,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavHostController
 import androidx.navigation.NavType
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -69,6 +73,13 @@ import com.cronoszip.app.ui.screens.ExtractingScreen
 import com.cronoszip.app.ui.screens.FileBrowserScreen
 import com.cronoszip.app.ui.screens.FileManagerScreen
 import com.cronoszip.app.ui.screens.HomeScreen
+import com.cronoszip.app.ui.screens.InstalledAppsScreen
+import com.cronoszip.app.ui.screens.DashboardScreen
+import com.cronoszip.app.ui.screens.ToolsScreen
+import com.cronoszip.app.ui.screens.BrowseRequest
+import com.cronoszip.app.ui.screens.BrowseRequests
+import com.cronoszip.app.ui.components.BottomNav
+import com.cronoszip.app.ui.components.MainTab
 import com.cronoszip.app.ui.screens.SettingsScreen
 import com.cronoszip.app.ui.screens.ThemeScreen
 import com.cronoszip.app.ui.screens.UpdaterScreen
@@ -91,6 +102,7 @@ private object Routes {
     const val Update = "update"
     const val ThemePicker = "theme"
     const val Lan = "lan"
+    const val Tools = "tools"
     const val ArchivePattern = "archive/{path}"
     fun browser(mode: BrowserMode) = "browser/${mode.name}"
     fun archiveView(path: String) = "archive/${Uri.encode(path)}"
@@ -116,6 +128,17 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
     var wrongPassword by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
     var noSpaceCheck by remember { mutableStateOf<CheckData?>(null) }
+    var showApps by remember { mutableStateOf(false) }
+
+    // The tab the bottom bar should highlight. Null on screens without the bar.
+    val backStack by nav.currentBackStackEntryAsState()
+    val currentTab: MainTab? = when (backStack?.destination?.route) {
+        Routes.Home -> MainTab.Home
+        Routes.Files -> MainTab.Browse
+        Routes.Tools -> MainTab.Tools
+        Routes.Settings -> MainTab.Settings
+        else -> null
+    }
 
     // The archive screen runs its own check and extraction, so those must not jump to the old screens.
     val onArchiveScreen = { nav.currentBackStackEntry?.destination?.route?.startsWith("archive/") == true }
@@ -199,10 +222,11 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
             LiquidBackground(animate = viewModel.settings.animations)
         }
 
+        Column(modifier = Modifier.fillMaxSize()) {
         NavHost(
             navController = nav,
-            startDestination = Routes.Files,
-            modifier = Modifier.fillMaxSize(),
+            startDestination = Routes.Home,
+            modifier = Modifier.weight(1f),
         ) {
             composable(Routes.Files) {
                 FileManagerScreen(
@@ -235,15 +259,24 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
             }
 
             composable(Routes.Home) {
-                HomeScreen(
-                    viewModel = viewModel,
-                    onGetStarted = {
-                        viewModel.enterBrowser(BrowserMode.Archive)
-                        nav.navigate(Routes.browser(BrowserMode.Archive))
+                DashboardScreen(
+                    onOpenBrowse = { category, folder ->
+                        BrowseRequests.pending = BrowseRequest(category = category, folder = folder)
+                        nav.navigate(Routes.Files) {
+                            popUpTo(Routes.Home) { inclusive = false }
+                            launchSingleTop = true
+                        }
                     },
-                    onOpenHistory = { path -> viewModel.checkArchive(path) },
-                    onSettings = { nav.navigate(Routes.Settings) },
-                    onOpenFiles = { nav.navigate(Routes.Files) },
+                )
+            }
+
+            composable(Routes.Tools) {
+                ToolsScreen(
+                    onOpenExtract = { nav.navigate(Routes.browser(BrowserMode.Archive)) },
+                    onOpenApps = { showApps = true },
+                    onOpenLan = { nav.navigate(Routes.Lan) },
+                    onOpenTheme = { nav.navigate(Routes.ThemePicker) },
+                    onOpenUpdate = { nav.navigate(Routes.Update) },
                 )
             }
 
@@ -323,6 +356,15 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
             }
         }
 
+        val tab = currentTab
+        if (tab != null) {
+            BottomNav(
+                selected = tab,
+                onSelect = { picked -> navigateTab(nav, picked) },
+            )
+        }
+        }
+
         SnackbarHost(
             hostState = snackbar,
             modifier = Modifier
@@ -333,6 +375,15 @@ fun CronosApp(viewModel: CronosViewModel = viewModel()) {
 
         if (viewModel.isChecking) {
             CheckingOverlay()
+        }
+    }
+
+    if (showApps) {
+        Dialog(
+            onDismissRequest = { showApps = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            InstalledAppsScreen(onClose = { showApps = false })
         }
     }
 
@@ -482,5 +533,19 @@ private fun SpaceRow(label: String, value: String, danger: Boolean = false) {
             style = MaterialTheme.typography.bodyMedium,
             color = if (danger) Danger else TextPrimary,
         )
+    }
+}
+
+/** Moves to one of the main tabs, keeping Home at the bottom of the stack. */
+private fun navigateTab(nav: NavHostController, tab: MainTab) {
+    val route = when (tab) {
+        MainTab.Home -> Routes.Home
+        MainTab.Browse -> Routes.Files
+        MainTab.Tools -> Routes.Tools
+        MainTab.Settings -> Routes.Settings
+    }
+    nav.navigate(route) {
+        popUpTo(Routes.Home) { inclusive = false }
+        launchSingleTop = true
     }
 }
