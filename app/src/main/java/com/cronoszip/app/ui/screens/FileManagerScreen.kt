@@ -927,14 +927,10 @@ fun FileManagerScreen(
         Category.entries.map { category ->
             FilesChipSpec(category.label, activePane.category == category) { jump(category) }
         }
-    val storageChips = mounts.map { uri ->
+    // Mounted SD cards and USB drives. Add, remove and installed apps live in Options.
+    val mountChips = mounts.map { uri ->
         FilesChipSpec(mountLabels[uri] ?: "Storage", activeMount == uri) { openMount(uri) }
-    } + listOf(
-        FilesChipSpec("+ Add storage", false) { mountLauncher.launch(null) },
-        FilesChipSpec("Installed apps", false) { showApps = true },
-    ) + (activeMount?.let { uri ->
-        listOf(FilesChipSpec("× Remove storage", false) { removeMount(uri) })
-    } ?: emptyList())
+    }
     val upA: String? = if (paneA.category == null) upTargetOf(paneA) else null
     val upB: String? = if (paneB.category == null) upTargetOf(paneB) else null
 
@@ -943,25 +939,26 @@ fun FileManagerScreen(
 
     // Header controls. In landscape they sit in a scrollable left panel.
     val header: @Composable ColumnScope.() -> Unit = {
-        TopBar(title = "Files", onMore = { showOptions = true })
-        Spacer(Modifier.height(4.dp))
+        TopBar(
+            title = "Files",
+            split = split,
+            onToggleSplit = {
+                split = !split
+                activeIndex = 0
+            },
+            onMore = { showOptions = true },
+        )
+        Spacer(Modifier.height(14.dp))
 
-        ModeSwitch(split = split, onChange = {
-            split = it
-            activeIndex = 0
-        })
-        Spacer(Modifier.height(4.dp))
-
-        FilesSectionLabel("File types")
         FilesChipStrip(typeChips)
-        Spacer(Modifier.height(4.dp))
-
-        FilesSectionLabel("Storage apps")
-        FilesChipStrip(storageChips)
-        Spacer(Modifier.height(4.dp))
+        if (mountChips.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            FilesChipStrip(mountChips)
+        }
+        Spacer(Modifier.height(12.dp))
 
         SearchBar(query = query, onQuery = { query = it }, onClear = { query = "" })
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(10.dp))
 
         if (granted) {
             PathCard(
@@ -970,12 +967,12 @@ fun FileManagerScreen(
                 itemCount = activeData.entries.size,
                 storagePath = root,
             )
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(10.dp))
         }
 
         if (batch.items.isNotEmpty()) {
             BatchPill(batch = batch, onClick = { showBatch = true })
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(10.dp))
         }
 
         message?.let {
@@ -983,7 +980,7 @@ fun FileManagerScreen(
                 text = it,
                 style = MaterialTheme.typography.bodySmall,
                 color = CronosCyan,
-                modifier = Modifier.padding(bottom = 6.dp),
+                modifier = Modifier.padding(bottom = 8.dp),
             )
         }
     }
@@ -1244,8 +1241,31 @@ fun FileManagerScreen(
             onHidden = { showHidden = it },
             amoled = AppPrefs.amoled,
             onAmoled = { AppPrefs.setAmoled(context, it) },
-            onTheme = onOpenTheme,
-            onLan = onOpenLan,
+            hasStorage = activeMount != null,
+            onAddStorage = {
+                showOptions = false
+                mountLauncher.launch(null)
+            },
+            onRemoveStorage = {
+                showOptions = false
+                activeMount?.let { removeMount(it) }
+            },
+            onInstalledApps = {
+                showOptions = false
+                showApps = true
+            },
+            onTheme = {
+                showOptions = false
+                onOpenTheme()
+            },
+            onSettings = {
+                showOptions = false
+                onSettings()
+            },
+            onLan = {
+                showOptions = false
+                onOpenLan()
+            },
             onDismiss = { showOptions = false },
         )
     }
@@ -2030,9 +2050,9 @@ private fun PathCard(title: String, itemCount: Int, storagePath: String) {
 }
 
 @Composable
-private fun TopBar(title: String, onMore: () -> Unit) {
+private fun TopBar(title: String, split: Boolean, onToggleSplit: () -> Unit, onMore: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -2044,14 +2064,35 @@ private fun TopBar(title: String, onMore: () -> Unit) {
             )
             Text(
                 text = title,
-                style = MaterialTheme.typography.headlineLarge,
+                style = MaterialTheme.typography.headlineMedium,
                 color = TextPrimary,
                 fontWeight = FontWeight.Bold,
             )
         }
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .height(40.dp)
+                .clip(RoundedCornerShape(50))
+                .background(if (split) CronosBlue.copy(alpha = 0.45f) else GlassWhite.copy(alpha = 0.06f))
+                .border(
+                    1.dp,
+                    if (split) CronosCyan.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.12f),
+                    RoundedCornerShape(50),
+                )
+                .clickable(onClick = onToggleSplit)
+                .padding(horizontal = 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = if (split) "Single pane" else "Dual pane",
+                style = MaterialTheme.typography.labelLarge,
+                color = TextPrimary,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .size(40.dp)
                 .clip(CircleShape)
                 .background(GlassWhite.copy(alpha = 0.06f))
                 .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
@@ -2062,41 +2103,9 @@ private fun TopBar(title: String, onMore: () -> Unit) {
                 imageVector = Icons.Rounded.MoreHoriz,
                 contentDescription = "Options",
                 tint = TextPrimary,
-                modifier = Modifier.size(22.dp),
+                modifier = Modifier.size(20.dp),
             )
         }
-    }
-}
-
-@Composable
-private fun ModeSwitch(split: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .glassSurface(50.dp)
-            .padding(4.dp),
-    ) {
-        ModeSegment(label = "Browse", selected = !split, modifier = Modifier.weight(1f)) { onChange(false) }
-        ModeSegment(label = "Split", selected = split, modifier = Modifier.weight(1f)) { onChange(true) }
-    }
-}
-
-@Composable
-private fun ModeSegment(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (selected) CronosBlue.copy(alpha = 0.45f) else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = if (selected) TextPrimary else TextSecondary,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-        )
     }
 }
 @Composable
@@ -2311,7 +2320,12 @@ private fun OptionsDialog(
     onHidden: (Boolean) -> Unit,
     amoled: Boolean,
     onAmoled: (Boolean) -> Unit,
+    hasStorage: Boolean,
+    onAddStorage: () -> Unit,
+    onRemoveStorage: () -> Unit,
+    onInstalledApps: () -> Unit,
     onTheme: () -> Unit,
+    onSettings: () -> Unit,
     onLan: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -2321,130 +2335,132 @@ private fun OptionsDialog(
         SolidDialogCard(glow = CronosCyan) {
             Text(
                 text = "Options",
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.headlineSmall,
                 color = TextPrimary,
             )
-            Spacer(Modifier.height(14.dp))
-
-            SectionTitle("Show")
-            SwitchRow(
-                label = "Hidden files",
-                checked = showHidden,
-                onChange = onHidden,
+            Text(
+                text = "Preferences, storage and tools",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
             )
-            SwitchRow(
-                label = "AMOLED dark theme",
-                checked = amoled,
-                onChange = onAmoled,
+            Spacer(Modifier.height(6.dp))
+
+            SectionTitle("Browsing")
+            SwitchRow(label = "Show hidden files", checked = showHidden, onChange = onHidden)
+
+            SectionTitle("Appearance")
+            SwitchRow(label = "AMOLED black", checked = amoled, onChange = onAmoled)
+            OptionRow(
+                icon = Icons.Rounded.Palette,
+                title = "Theme & colours",
+                subtitle = "Cronos blue, phone colours or your own",
+                onClick = onTheme,
             )
 
-            Spacer(Modifier.height(10.dp))
-            SectionTitle("Theme")
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onTheme)
-                    .background(GlassWhite.copy(alpha = 0.03f))
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Palette,
-                    contentDescription = null,
-                    tint = CronosCyan,
-                    modifier = Modifier.size(20.dp),
-                )
-                Spacer(Modifier.width(10.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Theme & colours",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = TextPrimary,
-                    )
-                    Text(
-                        text = "Cronos blue, phone colours (Material You) or your own colour",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                    )
-                }
-
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                    contentDescription = null,
-                    tint = TextSecondary,
-                    modifier = Modifier.size(18.dp),
+            SectionTitle("Storage")
+            OptionRow(
+                icon = Icons.Rounded.Storage,
+                title = "Add storage",
+                subtitle = "Open an SD card or USB drive",
+                onClick = onAddStorage,
+            )
+            if (hasStorage) {
+                OptionRow(
+                    icon = Icons.Rounded.Close,
+                    title = "Remove current storage",
+                    subtitle = "Stop showing this drive in Files",
+                    onClick = onRemoveStorage,
                 )
             }
+            OptionRow(
+                icon = Icons.Rounded.Shield,
+                title = "Installed apps",
+                subtitle = "Browse and back up apps on this phone",
+                onClick = onInstalledApps,
+            )
+
+            SectionTitle("Tools")
+            OptionRow(
+                icon = Icons.Rounded.Upload,
+                title = "LAN transfer (FTP)",
+                subtitle = "Share files between two phones on Wi-Fi or hotspot",
+                onClick = onLan,
+            )
+            OptionRow(
+                icon = Icons.Rounded.Folder,
+                title = "Settings & updates",
+                subtitle = "App behaviour, data and version",
+                onClick = onSettings,
+            )
 
             Spacer(Modifier.height(14.dp))
-            SectionTitle("Network")
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onLan)
-                    .background(GlassWhite.copy(alpha = 0.03f))
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Folder,
-                    contentDescription = null,
-                    tint = CronosCyan,
-                    modifier = Modifier.size(20.dp),
-                )
-                Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "LAN transfer (FTP)",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = TextPrimary,
-                    )
-                    Text(
-                        text = "Share or copy files between two phones on Wi-Fi or hotspot",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                    )
-                }
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                    contentDescription = null,
-                    tint = TextSecondary,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            Spacer(Modifier.height(14.dp))
-            SectionTitle("About")
             Text(
                 text = "Chronos Manager brings HatchZip functionality to Android. It is a fork of Chronos Zip, " +
                     "which is a fork of HatchZip, expanded into a full-fledged file manager.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
             )
-            Spacer(Modifier.height(6.dp))
             Text(
                 text = "By AizenEMU",
                 style = MaterialTheme.typography.labelMedium,
                 color = TextPrimary,
-            )
-            Spacer(Modifier.height(10.dp))
-
-            SecondaryButton(
-                text = "Support on YouTube",
-                modifier = Modifier.fillMaxWidth(),
-                onClick = { uriHandler.openUri("https://youtube.com/@aizenemu") },
+                modifier = Modifier.padding(top = 4.dp),
             )
 
-            Spacer(Modifier.height(16.dp))
-            SecondaryButton(
-                text = "Done",
-                modifier = Modifier.fillMaxWidth(),
-                onClick = onDismiss,
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SecondaryButton(
+                    text = "YouTube",
+                    modifier = Modifier.weight(1f),
+                    onClick = { uriHandler.openUri("https://youtube.com/@aizenemu") },
+                )
+                PrimaryButton(
+                    text = "Done",
+                    modifier = Modifier.weight(1f),
+                    onClick = onDismiss,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OptionRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(GlassWhite.copy(alpha = 0.04f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = CronosCyan,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = TextPrimary,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
             )
         }
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+            contentDescription = null,
+            tint = TextSecondary,
+            modifier = Modifier.size(16.dp),
+        )
     }
 }
 
